@@ -19,7 +19,8 @@ export class FileScanService {
   private readonly logger = new Logger(FileScanService.name);
 
   constructor(
-    @InjectRepository(UploadFileEntity) private readonly files: Repository<UploadFileEntity>,
+    @InjectRepository(UploadFileEntity)
+    private readonly files: Repository<UploadFileEntity>,
     private readonly r2: R2Service,
     @InjectQueue(process.env.FLEET_IMPORT_QUEUE || 'fleet-import')
     private readonly fleetImportQueue: Queue,
@@ -34,7 +35,9 @@ export class FileScanService {
       return;
     }
     if (file.env !== env) {
-      this.logger.warn(`Env mismatch for file ${fileId}: expected ${env}, got ${file.env}`);
+      this.logger.warn(
+        `Env mismatch for file ${fileId}: expected ${env}, got ${file.env}`,
+      );
       return;
     }
 
@@ -57,14 +60,25 @@ export class FileScanService {
       const stat = await fs.stat(tmpPath);
       const maxBytes = Number(process.env.MAX_FILE_BYTES || 10 * 1024 * 1024);
       if (stat.size > maxBytes) {
-        await this.failValidation(file, `File too large (${stat.size} bytes > ${maxBytes})`, 'too_large');
+        await this.failValidation(
+          file,
+          `File too large (${stat.size} bytes > ${maxBytes})`,
+          'too_large',
+        );
         return;
       }
 
       // Stage A: type/content validation
-      const validation = await this.validateByExpectedType(file.expected_file_type, tmpPath);
+      const validation = await this.validateByExpectedType(
+        file.expected_file_type,
+        tmpPath,
+      );
       if (!validation.ok) {
-        await this.failValidation(file, validation.reason, validation.detectedType ?? 'unknown');
+        await this.failValidation(
+          file,
+          validation.reason,
+          validation.detectedType ?? 'unknown',
+        );
         return;
       }
 
@@ -110,7 +124,8 @@ export class FileScanService {
       });
 
       // Optional: enqueue the next stage (no deletion here)
-      const enqueueNext = (process.env.ENQUEUE_NEXT_ON_PASSED || 'true').toLowerCase() === 'true';
+      const enqueueNext =
+        (process.env.ENQUEUE_NEXT_ON_PASSED || 'true').toLowerCase() === 'true';
       if (enqueueNext && file.expected_file_type === 'FLEET_CSV') {
         await this.fleetImportQueue.add(
           'fleet-import-file',
@@ -143,48 +158,88 @@ export class FileScanService {
 
     if (expected === 'FLEET_CSV') {
       if (ft?.mime && !ft.mime.startsWith('text/')) {
-        return { ok: false, detectedType: ft.mime, reason: `Expected CSV/text but detected ${ft.mime}` };
+        return {
+          ok: false,
+          detectedType: ft.mime,
+          reason: `Expected CSV/text but detected ${ft.mime}`,
+        };
       }
       return this.validateFleetCsv(filePath);
     }
 
     if (expected === 'IMAGE_UPLOAD') {
-      if (!ft?.mime) return { ok: false, detectedType: 'unknown', reason: 'Could not detect file type' };
-      if (!ft.mime.startsWith('image/')) return { ok: false, detectedType: ft.mime, reason: `Expected image but detected ${ft.mime}` };
-      return { ok: true, detectedType: ft.mime, reason: 'Validated as image', reasonSummary: 'Magic bytes indicate image/*' };
+      if (!ft?.mime)
+        return {
+          ok: false,
+          detectedType: 'unknown',
+          reason: 'Could not detect file type',
+        };
+      if (!ft.mime.startsWith('image/'))
+        return {
+          ok: false,
+          detectedType: ft.mime,
+          reason: `Expected image but detected ${ft.mime}`,
+        };
+      return {
+        ok: true,
+        detectedType: ft.mime,
+        reason: 'Validated as image',
+        reasonSummary: 'Magic bytes indicate image/*',
+      };
     }
 
-    return { ok: false, detectedType: ft?.mime ?? 'unknown', reason: `Unknown expected_file_type: ${expected}` };
+    return {
+      ok: false,
+      detectedType: ft?.mime ?? 'unknown',
+      reason: `Unknown expected_file_type: ${expected}`,
+    };
   }
 
-  private async validateFleetCsv(
-    filePath: string,
-  ): Promise<{ ok: boolean; detectedType?: string; reason: string; reasonSummary?: string }> {
+  private async validateFleetCsv(filePath: string): Promise<{
+    ok: boolean;
+    detectedType?: string;
+    reason: string;
+    reasonSummary?: string;
+  }> {
     const readBytes = Number(process.env.VALIDATION_READ_BYTES || 256 * 1024);
 
     const buf = await fs.readFile(filePath);
     const slice = buf.subarray(0, Math.min(buf.length, readBytes));
 
     if (slice.includes(0)) {
-      return { ok: false, detectedType: 'binary', reason: 'File contains NUL bytes; not text/csv' };
+      return {
+        ok: false,
+        detectedType: 'binary',
+        reason: 'File contains NUL bytes; not text/csv',
+      };
     }
 
     const text = slice.toString('utf8');
 
     // Printable ratio heuristic
-    const printable = text.split('').filter((c) => {
+    const printable = text.split('').filter(c => {
       const code = c.charCodeAt(0);
-      return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126) || code >= 160;
+      return (
+        code === 9 ||
+        code === 10 ||
+        code === 13 ||
+        (code >= 32 && code <= 126) ||
+        code >= 160
+      );
     }).length;
 
     const ratio = printable / Math.max(1, text.length);
     if (ratio < 0.85) {
-      return { ok: false, detectedType: 'text/unknown', reason: `Text looks suspicious (printable ratio ${ratio.toFixed(2)})` };
+      return {
+        ok: false,
+        detectedType: 'text/unknown',
+        reason: `Text looks suspicious (printable ratio ${ratio.toFixed(2)})`,
+      };
     }
 
     const lines = text
       .split(/\r?\n/)
-      .map((l) => l.trim())
+      .map(l => l.trim())
       .filter(Boolean);
 
     if (lines.length === 0) {
@@ -192,12 +247,16 @@ export class FileScanService {
     }
 
     const headerLine = lines[0];
-    const headers = headerLine.split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+    const headers = headerLine
+      .split(',')
+      .map(h => h.trim().replace(/^"|"$/g, ''));
 
-    const normalised = new Set(headers.map((h) => h.replace(/\s+/g, ' ').trim().toLowerCase()));
+    const normalised = new Set(
+      headers.map(h => h.replace(/\s+/g, ' ').trim().toLowerCase()),
+    );
     const required = ['account handle', 'character'];
 
-    const missing = required.filter((r) => !normalised.has(r));
+    const missing = required.filter(r => !normalised.has(r));
     if (missing.length) {
       return {
         ok: false,
@@ -207,7 +266,12 @@ export class FileScanService {
       };
     }
 
-    return { ok: true, detectedType: 'text/csv', reason: 'Validated as fleet CSV', reasonSummary: 'Required headers present' };
+    return {
+      ok: true,
+      detectedType: 'text/csv',
+      reason: 'Validated as fleet CSV',
+      reasonSummary: 'Required headers present',
+    };
   }
 
   private async clamScan(filePath: string): Promise<{
@@ -220,7 +284,9 @@ export class FileScanService {
     errorMessage?: string;
   }> {
     const mode = process.env.CLAMAV_MODE || 'clamscan';
-    const bin = process.env.CLAMAV_PATH || (mode === 'clamdscan' ? 'clamdscan' : 'clamscan');
+    const bin =
+      process.env.CLAMAV_PATH ||
+      (mode === 'clamdscan' ? 'clamdscan' : 'clamscan');
     const timeoutMs = Number(process.env.SCAN_TIMEOUT_MS || 120_000);
 
     const args = ['--no-summary', filePath];
@@ -228,7 +294,11 @@ export class FileScanService {
     const engine = 'clamav';
     const versionInfo = await this.getClamVersion(bin).catch(() => undefined);
 
-    const { code, stdout, stderr, timedOut } = await this.execWithTimeout(bin, args, timeoutMs);
+    const { code, stdout, stderr, timedOut } = await this.execWithTimeout(
+      bin,
+      args,
+      timeoutMs,
+    );
 
     if (timedOut) {
       return {
@@ -275,8 +345,14 @@ export class FileScanService {
     };
   }
 
-  private async getClamVersion(bin: string): Promise<{ engineVersion?: string; signatureVersion?: string }> {
-    const { code, stdout } = await this.execWithTimeout(bin, ['--version'], 10_000);
+  private async getClamVersion(
+    bin: string,
+  ): Promise<{ engineVersion?: string; signatureVersion?: string }> {
+    const { code, stdout } = await this.execWithTimeout(
+      bin,
+      ['--version'],
+      10_000,
+    );
     if (code !== 0) return {};
     const line = (stdout || '').trim();
     const parts = line.split('/');
@@ -289,8 +365,13 @@ export class FileScanService {
     cmd: string,
     args: string[],
     timeoutMs: number,
-  ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-    return new Promise((resolve) => {
+  ): Promise<{
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+  }> {
+    return new Promise(resolve => {
       const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
@@ -301,17 +382,22 @@ export class FileScanService {
         child.kill('SIGKILL');
       }, timeoutMs);
 
-      child.stdout.on('data', (d) => (stdout += d.toString()));
-      child.stderr.on('data', (d) => (stderr += d.toString()));
+      child.stdout.on('data', d => (stdout += d.toString()));
+      child.stderr.on('data', d => (stderr += d.toString()));
 
-      child.on('close', (code) => {
+      child.on('close', code => {
         clearTimeout(timer);
         resolve({ code, stdout, stderr, timedOut });
       });
 
-      child.on('error', (err) => {
+      child.on('error', err => {
         clearTimeout(timer);
-        resolve({ code: 2, stdout, stderr: `${stderr}\n${String(err)}`, timedOut });
+        resolve({
+          code: 2,
+          stdout,
+          stderr: `${stderr}\n${String(err)}`,
+          timedOut,
+        });
       });
     });
   }
@@ -326,7 +412,11 @@ export class FileScanService {
     await this.files.save(file);
   }
 
-  private async failValidation(file: UploadFileEntity, reason: string, detected: string): Promise<void> {
+  private async failValidation(
+    file: UploadFileEntity,
+    reason: string,
+    detected: string,
+  ): Promise<void> {
     await this.setStatus(file, 'VALIDATION_FAILED', {
       validation_completed_at: new Date(),
       file_type_detected: detected,

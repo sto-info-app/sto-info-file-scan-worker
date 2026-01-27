@@ -1,39 +1,49 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
+import { ClsModule } from 'nestjs-cls';
+import { getTypeOrmConfig } from 'config/typeorm.config';
 
-import { UploadFileEntity } from './db/entities/upload-file.entity';
+import { SharedModule } from './shared/shared.module';
 import { R2Module } from './r2/r2.module';
 import { QueueModule } from './queue/queue.module';
 import { HealthModule } from './health/health.module';
+import { DatabaseModule } from './database/database.module';
+import { ConfigCheckService } from './config-check/config-check.service';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: `config/environments/${process.env.NODE_ENV || ''}.env`,
+    }),
 
     TypeOrmModule.forRootAsync({
-      useFactory: () => ({
-        type: 'postgres',
-        url: process.env.DATABASE_URL,
-        entities: [UploadFileEntity],
-        synchronize: false,
-        ssl:
-          process.env.NODE_ENV === 'production'
-            ? { rejectUnauthorized: false }
-            : undefined,
-      }),
+      imports: [ConfigModule, SharedModule],
+      useFactory: async () => {
+        const typeOrmConfig = await getTypeOrmConfig();
+        return typeOrmConfig;
+      },
+      inject: [ConfigService],
     }),
-    TypeOrmModule.forFeature([UploadFileEntity]),
 
     BullModule.forRoot({
       connection: { url: process.env.REDIS_URL },
       prefix: process.env.QUEUE_PREFIX || 'bull:sto-info:',
     }),
 
+    ClsModule.forRoot({
+      global: true,
+      middleware: { mount: true },
+    }),
+
+    SharedModule,
     R2Module,
     QueueModule,
     HealthModule,
+    DatabaseModule,
   ],
+  providers: [ConfigCheckService],
 })
 export class AppModule {}
