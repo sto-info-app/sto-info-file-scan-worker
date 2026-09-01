@@ -1,0 +1,6 @@
+{
+    "sonarlint.connectedMode.project": {
+        "connectionId": "sto-info-app",
+        "projectKey": "sto-info-app_sto-info-file-scan-worker"
+    }
+}
