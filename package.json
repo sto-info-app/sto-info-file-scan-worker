@@ -38,13 +38,13 @@
     "test:mutation:dry": "stryker run --reporters clear-text --reporters html --reporters progress --dryRunOnly"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.975.0",
-    "@aws-sdk/client-secrets-manager": "^3.975.0",
+    "@aws-sdk/client-s3": "^3.1075.0",
+    "@aws-sdk/client-secrets-manager": "^3.1075.0",
     "@nestjs/bullmq": "^11.0.4",
-    "@nestjs/common": "^11.1.12",
+    "@nestjs/common": "^11.1.27",
     "@nestjs/config": "^4.0.0",
-    "@nestjs/core": "^11.1.12",
-    "@nestjs/platform-express": "^11.1.12",
+    "@nestjs/core": "^11.1.27",
+    "@nestjs/platform-express": "^11.1.27",
     "@nestjs/schedule": "^6.1.0",
     "@nestjs/typeorm": "^11.0.0",
     "bullmq": "^5.12.0",
@@ -53,7 +53,7 @@
     "cloudmersive-virus-api-client": "^1.4.0",
     "cross-env": "^10.1.0",
     "dotenv": "^17.2.3",
-    "file-type": "^19.0.0",
+    "file-type": "^21.3.4",
     "ioredis": "^5.9.2",
     "nestjs-cls": "^6.2.0",
     "pg": "^8.17.2",
@@ -67,10 +67,10 @@
     "@ianvs/prettier-plugin-sort-imports": "^4.7.0",
     "@nestjs/cli": "^11.0.16",
     "@nestjs/schematics": "^11.0.0",
-    "@nestjs/testing": "^11.1.12",
-    "@stryker-mutator/core": "^9.4.0",
-    "@stryker-mutator/jest-runner": "^9.4.0",
-    "@stryker-mutator/typescript-checker": "^9.4.0",
+    "@nestjs/testing": "^11.1.27",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/jest-runner": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.0.10",
     "@types/supertest": "^6.0.2",
@@ -93,7 +93,19 @@
     "typescript": "^5.5.3"
   },
   "overrides": {
+    "@babel/core": "7.29.7",
+    "ajv": "8.18.0",
+    "brace-expansion": "5.0.6",
     "diff": "^8.0.3",
-    "lodash": "^4.17.23"
+    "form-data": "4.0.6",
+    "handlebars": "4.7.9",
+    "js-yaml": "4.2.0",
+    "lodash": "^4.17.24",
+    "multer": "2.2.0",
+    "path-to-regexp": "8.4.2",
+    "picomatch": "4.0.4",
+    "qs": "6.15.2",
+    "serialize-javascript": "7.0.4",
+    "uuid": "14.0.1"
   }
 }
