@@ -59,7 +59,7 @@
     "pg": "^8.17.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "typeorm": "^0.3.27"
+    "typeorm": "^0.3.31"
   },
   "devDependencies": {
     "@eslint/config-array": "^0.23.0",
