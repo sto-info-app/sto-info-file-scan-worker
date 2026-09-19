@@ -22,7 +22,7 @@ export default [
     languageOptions: {
       parser: tsParser,
       parserOptions: {
-        project: './tsconfig.json',
+        project: ['./tsconfig.json', './tsconfig.spec.json'],
         tsconfigRootDir: __dirname,
         sourceType: 'module',
       },
@@ -40,6 +40,48 @@ export default [
       // Base recommended rule sets
       ...tsPlugin.configs.recommended.rules,
       ...prettierPlugin.configs.recommended.rules,
+
+      // Matching the backend, so that a convention learned in one
+      // repository holds in the other.
+      '@typescript-eslint/naming-convention': [
+        'error',
+        {
+          selector: 'classProperty',
+          modifiers: ['readonly', 'private', 'static'],
+          format: ['strictCamelCase', 'UPPER_CASE'],
+          leadingUnderscore: 'require',
+        },
+        {
+          selector: 'classProperty',
+          modifiers: ['readonly', 'protected', 'static'],
+          format: ['strictCamelCase', 'UPPER_CASE'],
+          leadingUnderscore: 'require',
+        },
+        {
+          selector: 'classProperty',
+          modifiers: ['readonly', 'private'],
+          format: ['strictCamelCase'],
+          leadingUnderscore: 'require',
+        },
+        {
+          selector: 'classProperty',
+          modifiers: ['readonly', 'protected'],
+          format: ['strictCamelCase'],
+          leadingUnderscore: 'require',
+        },
+        {
+          selector: 'parameterProperty',
+          modifiers: ['readonly', 'private'],
+          format: ['strictCamelCase'],
+          leadingUnderscore: 'require',
+        },
+        {
+          selector: 'parameterProperty',
+          modifiers: ['readonly', 'protected'],
+          format: ['strictCamelCase'],
+          leadingUnderscore: 'require',
+        },
+      ],
 
       // Project-specific overrides
       '@typescript-eslint/interface-name-prefix': 'off',

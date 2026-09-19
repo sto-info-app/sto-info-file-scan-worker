@@ -6,10 +6,17 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
-    "target": "es2017",
+    "esModuleInterop": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "target": "es2021",
+
+    "lib": ["es2021"],
     "sourceMap": true,
     "outDir": "./dist",
+    "types": ["node"],
     "baseUrl": "./",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "src/*": ["src/*"]
     },
@@ -19,5 +26,7 @@
     "noFallthroughCasesInSwitch": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true
-  }
+  },
+  "include": ["src/**/*.ts", "config/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts"]
 }

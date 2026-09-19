@@ -2,7 +2,7 @@ export default {
   moduleFileExtensions: ['js', 'json', 'ts'],
   testRegex: String.raw`.*\.spec\.ts$`,
   transform: {
-    [String.raw`^.+\.(t|j)s$`]: 'ts-jest',
+    [String.raw`^.+\.(t|j)s$`]: ['ts-jest', { tsconfig: 'tsconfig.spec.json' }],
   },
   moduleNameMapper: {
     '^src/(.*)$': '<rootDir>/src/$1',
@@ -36,24 +36,17 @@ export default {
     '/src/main.ts',
   ],
   testEnvironment: 'node',
+  // Raised from zero. The worker enforced nothing and had one spec file
+  // covering one utility, while the backend has enforced 100% throughout.
+  // Two standards in one project means the weaker one decides, and an
+  // untested credential or object-store path is exactly where a mistake
+  // hides.
   coverageThreshold: {
     global: {
-      statements: 0,
-      branches: 0,
-      functions: 0,
-      lines: 0,
-    },
-    './src/**/*.service.ts': {
-      statements: 0,
-      branches: 0,
-      functions: 0,
-      lines: 0,
-    },
-    './src/shared/utilities/**/*.ts': {
-      statements: 0,
-      branches: 0,
-      functions: 0,
-      lines: 0,
+      statements: 100,
+      branches: 100,
+      functions: 100,
+      lines: 100,
     },
   },
   coverageDirectory: '<rootDir>/reports/coverage',
