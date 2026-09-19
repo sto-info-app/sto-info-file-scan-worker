@@ -1,52 +1,113 @@
-# Worker Architecture Documentation
+# Worker architecture
 
-## Core Workflow
+The worker does one thing: it takes an asset identifier off a queue, reads
+that object out of the private quarantine bucket, asks a scanner about it,
+and puts an answer back on another queue. It cannot publish anything, and the
+absence of that ability is the design rather than a restriction on it.
 
-The `sto-info-file-scan-worker` operates on a producer-consumer model using **BullMQ**.
+## What happens to one job
 
-1. **Producer (Main API)**: Receives a file upload, stores the original file in a temporary R2 location, and pushes a job to the `file-scan` queue.
-2. **Consumer (Worker)**:
-   - Picks up a job from Redis.
-   - Downloads the file metadata from the database.
-   - Performs **Magic Byte Validation** to verify the file type.
-   - Sends the file to the **Antivirus Scanner**.
-   - Updates the database with the scan result (`passed`, `failed`, `virus_detected`).
-   - If configured (`ENQUEUE_NEXT_ON_PASSED`), triggers the next job (e.g., `fleet-import`).
+1. **Ask the scanner what it is.** Before anything is written, because the
+   signature database's identity is part of the attempt's idempotency key.
+2. **Claim the attempt.** One `INSERT ... ON CONFLICT DO UPDATE` either
+   creates it or takes over one whose lease has lapsed. A finished attempt is
+   a duplicate delivery and its verdict is repeated unchanged; a live lease
+   means another worker has it and this one says nothing.
+3. **Mark it scanning**, if this worker still holds the lease.
+4. **Stream the object.** Out of quarantine, through a transform that hashes
+   it, counts it, keeps its first sixty-four bytes and stops at the size
+   limit, and straight into `clamd` over `INSTREAM`. Nothing touches disk.
+   A heartbeat extends the lease while this runs.
+5. **Decide.** The hash is checked against what the registry recorded, and it
+   is checked even when the scanner said the bytes were clean.
+6. **Complete**, as a compare-and-set against the lease token. If that
+   matches nothing, another worker owns the question and this one says
+   nothing at all.
+7. **Send the verdict**, then record that it was sent.
 
-## Technology Stack
+Steps 1 to 3 and step 6 are each a single statement. **No transaction is open
+across step 5**, which is FC-010's third acceptance criterion: a
+`SELECT ... FOR UPDATE` around the attempt would hold a row lock for as long
+as ClamAV takes on a ten-megabyte file, and with a pool sized for a web
+application that is an exhaustion waiting for a slow upload.
 
-- **Framework**: NestJS (v11)
-- **Job Queue**: BullMQ (running on Redis)
-- **Database**: TypeORM + PostgreSQL
-- **Storage**: @aws-sdk/client-s3 (Cloudflare R2)
-- **Validation**: `file-type`, `class-validator`
-- **Secrets**: `AWS Secrets Manager`
+## Bytes never touch disk
 
-## Module Structure
+The old pipeline downloaded each object to `/tmp/upload-<fileId>` and read it
+whole. [ADR-0006](../../../Plans/Fleets/ADR/0006-worker-job-transport-and-ownership.md)
+recorded that as an open follow-up against plan section 10's rule that
+ephemeral services keep no local upload storage, and FC-010 closes it by
+removing the file rather than by bounding it: `clamd`'s `INSTREAM` command
+takes the bytes as they arrive, so there is nothing to bound, nothing to
+delete and nothing left behind by a crash.
 
-- `SharedModule`: Provides `SecretsService` for retrieving configuration from AWS.
-- `R2Module`: Handles communication with Cloudflare R2 storage.
-- `QueueModule`: Contains the BullMQ processors and listeners.
-- `HealthModule`: Provides HTTP endpoints for infrastructure monitoring.
-- `DatabaseModule`: Ensures database consistency (e.g. UTC timezone).
+That matters because "guaranteed deletion" is a promise a crashing container
+cannot keep. A rule about crashes has to hold by construction.
 
-## Middleware & Interceptors
+## Modules
 
-Since the worker is not a public-facing API, many standard web middlewares (CORS, Helmet) are omitted. However, it still uses:
+| Module | What it knows |
+| --- | --- |
+| `WorkerConfigModule` | The settings, read once at startup. Global. |
+| `ScanningModule` | The scanner, behind `SCAN_ENGINE`. Nothing about the database. |
+| `QuarantineModule` | Read-only access to one bucket. Nothing about scanning. |
+| `ScanModule` | The pipeline, the attempt record and the two queues. |
+| `HealthModule` | The probes. Depends on the scanner, because that is the question readiness asks. |
+| `SharedModule` | AWS Secrets Manager. |
+| `DatabaseModule` | Puts the session in UTC. |
 
-- **ConfigCheckService**: Runs at bootstrap to ensure all required environment variables and secrets are present.
-- **ValidationPipe**: Used for internal job payload validation (if applicable).
+`ClsModule` has gone with the request-scoped context it was mounting, which
+nothing read. This process handles queue jobs, not requests, and a
+correlation identifier travels in the message as `traceId` instead.
 
-## Logging Strategy
+## The engine boundary
 
-The application uses NestJS's built-in `Logger`.
+[ADR-0005](../../../Plans/Fleets/ADR/0005-malware-scanning-engine.md) selected
+ClamAV, chose to run it as `clamd` in the worker container, and required the
+engine to sit behind a neutral interface "so this remains revisitable". That
+interface is `ScanEngine`, with two methods:
 
-- **Log Levels**: Controlled via `LOG_LEVEL` env var.
-- **Context**: Every log includes the class name and, where applicable, the Job ID for easy tracking in logs.
+- `describe()` — what the scanner is, and how old its signatures are;
+- `scan(stream)` — one of `CLEAN`, `INFECTED`, `UNSUPPORTED`, `UNAVAILABLE`.
 
-## Error Handling & Retries
+Everything fails closed. A timeout, a dropped connection, a reply in a shape
+the client does not recognise, and a signature database older than the policy
+allows are all *not clean*, and there is no path through the client that
+turns silence into a pass.
 
-BullMQ is configured to handle retries for transient failures (e.g., network blips to R2 or Cloudmersive).
+The escalation ADR-0005 names — moving `clamd` out into its own Render
+private service — changes the socket factory and nothing else.
 
-- **Backoff**: Exponential backoff is used to avoid spamming failed services.
-- **Dead Letter Queue**: Jobs that fail after the maximum number of retries are moved to a "failed" state in Redis for manual inspection.
+## Recoverable restart
+
+**Graceful shutdown** drains what is in hand. `app.enableShutdownHooks()` lets
+BullMQ's Nest integration close its workers on the signal, so the job being
+processed finishes before the process exits.
+
+**A crash leaves work reclaimable.** The lease has an expiry rather than a
+holder, so an attempt whose worker went away is free for the next one as soon
+as the lease lapses — `SCAN_LEASE_MS`, five minutes by default. The state the
+row is left in is whatever the last holder reached, which is the truth about
+how far it got.
+
+**Nothing unscanned is published by a restart**, because nothing in this
+repository can publish anything at all.
+
+## Logging
+
+NestJS's own logger, at the levels `LOG_LEVEL` allows. Every line carries the
+class name and the identifiers — asset, attempt, trace. No line carries a
+filename, a signature name, or any part of a file's contents: a log is a sink
+like any other, and the backend's officer-canary sweep treats it as one.
+
+## Errors and retries
+
+| Situation | What happens |
+| --- | --- |
+| A message that violates the contract | Logged and dropped. It will violate it identically every time. |
+| The scanner unreachable before an attempt exists | Rethrown, so BullMQ retries and then keeps the job in its failed set. |
+| The scanner unreachable during a scan | `FAILED` → a `RETRY` verdict → the asset waits for another go. |
+| Signatures too old | The same. The file has done nothing wrong; `freshclam` has. |
+| An infection, an unreadable payload, a hash mismatch, an oversize or missing object | `REJECTED`, final. |
+| The retry budget spent | `REJECTED` with `RETRY_BUDGET_EXHAUSTED`, so the backend hears a final answer rather than leaving an upload in limbo. |
+| The lease lost | Nothing is said. Another worker owns the question. |

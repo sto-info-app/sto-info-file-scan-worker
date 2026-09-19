@@ -2,15 +2,28 @@
 
 ## Project Overview
 
-The `sto-info-file-scan-worker` is a specialized NestJS service responsible for asynchronous processing of file uploads in the STO Info ecosystem. It handles file type validation, antivirus scanning (via Cloudmersive), and interactions with Cloudflare R2 storage. It utilizes BullMQ for job orchestration.
+The `sto-info-file-scan-worker` is a NestJS service that scans uploaded
+files for malware. It takes an asset identifier off a queue, reads that
+object out of the private quarantine bucket, asks ClamAV about it, and puts
+an answer back on a second queue.
+
+**It cannot publish anything.** The backend's asset registry decides whether
+a byte may be served, and this repository has no credential, no table and no
+code path that could reach that decision — ADR-0015.
 
 ## Features
 
-- **Asynchronous File Scanning**: Offloads processing from the main API.
-- **Antivirus Integration**: Scans files using Cloudmersive Virus API.
-- **File Type Validation**: Uses `file-type` to verify magic bytes.
-- **Queue-based Architecture**: Built on BullMQ and Redis for reliability.
-- **R2 Storage Integration**: Manages file storage and metadata.
+- **Streamed scanning**: objects go from Cloudflare R2 into `clamd` over
+  `INSTREAM` without touching disk.
+- **ClamAV, failing closed**: a timeout, an unparseable reply or a stale
+  signature database all mean *not clean* — never a pass.
+- **Leased attempts**: a lost lease writes nothing, so a stale worker cannot
+  overwrite the answer of the one that replaced it.
+- **A versioned, asset-only contract**: no URL, no credentials, no rows of
+  anybody's data, and the worker refuses to start against a contract version
+  it does not understand.
+- **Idempotent delivery**: a repeated message finds the first attempt rather
+  than making a second.
 
 ## Documentation
 
@@ -21,6 +34,7 @@ Documentation is in [docs/](docs/).
 - [docs/security.md](docs/security.md)
 - [docs/worker-architecture.md](docs/worker-architecture.md)
 - [docs/queues.md](docs/queues.md)
+- [docs/database.md](docs/database.md)
 
 ## Getting Started
 
@@ -56,8 +70,11 @@ npm install
 
 Environment files live in [config/environments/](config/environments/):
 
-- `config/environments/template.env`: A template containing all required keys for local development.
-- `config/environments/.env`: The active local environment file (not committed).
+- `config/environments/.env.example`: the template, and the only one. There
+  used to be a second at the repository root that disagreed with it; see
+  [docs/environment-variables.md](docs/environment-variables.md).
+- `config/environments/.env`: the active local environment file (not
+  committed).
 - `config/environments/.env.example`: A safe example for hosted/production environments.
 
 **Local Setup:**

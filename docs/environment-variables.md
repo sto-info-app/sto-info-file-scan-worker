@@ -1,80 +1,134 @@
 # Environment variables (Worker)
 
-This document lists the environment variables used by the `sto-info-file-scan-worker` at runtime.
+## Where they live
 
-## Environment files
+`config/environments/.env.example` is the template, and it is the only one.
+There used to be two — a second at the repository root — and they disagreed:
+the root file named `R2_ENDPOINT` and `DATABASE_URL`, this one named
+`CLOUDFLARE_R2_ENDPOINT` and `DB_HOST`. The code read the first set and
+`ConfigCheckService` validated the second, so the startup check passed on
+variables nothing used while the ones that mattered went unchecked. A startup
+probe that reports healthy while the R2 credentials it never looked at are
+absent is worse than no probe. FC-010 removed the root file.
 
-- `config/environments/template.env`: The master template for local development.
-- `config/environments/.env`: The active local environment file (use for `local` development; git-ignored).
-- `config/environments/.env.example`: A safe example for hosted/production environments like Render.com.
+`config/environments/.env` is the active local file and is git-ignored. The
+app reads it at startup via the `dotenv` call in `src/main.ts`.
 
-The app reads `config/environments/.env` at startup via the `dotenv` call in `src/main.ts`.
+Two things validate the environment, and they check different kinds of thing:
 
-## Required
+- **`ConfigCheckService`** checks that each required variable is present and
+  the right shape.
+- **`readWorkerSettings`** checks the relationships between them — that a
+  heartbeat is shorter than a lease, that the schema matches the migrations,
+  that the contract version is one this build supports.
 
-### Application
+Both run before anything connects to anything.
+
+## Application
 
 - `NODE_ENV`: `local` | `dev` | `staging` | `prod`
-- `LOG_LEVEL`: `error` | `warn` | `log` | `debug` | `verbose` (optionally comma-separated)
-- `APP_PORT`: Port the internal health check server listens on (default is `3000`)
-- `APP_TITLE`: "Star Trek Online Info File Scan Worker"
+- `LOG_LEVEL`: `error` | `warn` | `log` | `debug` | `verbose`, optionally
+  comma-separated
+- `APP_PORT`: the port the health probes listen on (default `3000`)
+- `APP_TITLE`
 
-### Database (TypeORM)
+## Database
+
+The same database as the backend, in a schema of this repository's own.
 
 - `DB_TYPE`: `postgres`
-- `DB_HOST`: Hostname
-- `DB_PORT`: Port (usually `5432`)
-- `DB_NAME`: Database name
-- `DB_SCHEMA`: Schema name
-- `DB_USERNAME`: Database username
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USERNAME`
+- `DB_SCHEMA`: **must be `sto_info_worker`.** The migrations name the schema
+  in their SQL and the worker refuses to start if the two disagree.
 - `DB_SSL_REJECT_UNAUTHORIZED`: `true` | `false`
-- `TYPEORM_SYNCHRONIZE`: `true` | `false` (should be `false` in production)
 - `TYPEORM_LOGGING`: `true` | `false`
-- `TYPEORM_ENTITIES`: Glob relative to the built root (e.g. `src/**/*.entity.{js,ts}`)
-- `TYPEORM_MIGRATIONS`: Glob relative to the built root (e.g. `src/database/migrations/*.{js,ts}`)
+- `TYPEORM_ENTITIES`, `TYPEORM_MIGRATIONS`: globs relative to the built root
 
-### Redis (BullMQ)
+**There is no `TYPEORM_SYNCHRONIZE`.** Synchronise against a database shared
+with another application will drop that application's columns to make the
+schema match these entities. The worker refuses to start when it is set.
 
-- `REDIS_URL`: Full connection string for Redis (e.g. `redis://localhost:6379`).
-- `QUEUE_PREFIX`: Prefix for BullMQ keys (default: `bull:sto-info:`)
-- `FILE_SCAN_QUEUE`: Name of the file scan queue (default: `file-scan`)
-- `FLEET_IMPORT_QUEUE`: Name of the fleet import queue (default: `fleet-import`)
-- `ENQUEUE_NEXT_ON_PASSED`: `true` | `false` (whether to trigger the next job in the sequence)
+## Redis and the contract
 
-### AWS Secrets Manager
+- `REDIS_URL`
+- `QUEUE_PREFIX`: default `bull:sto-info:`
+- `FILE_SCAN_SCHEMA_VERSION`: the contract version this process speaks.
+  Default 1. It must be one the build supports, or the worker refuses to
+  start — ADR-0006 decision 3.
 
-- `AWS_ACCESS_KEY_ID`: Used to access Secrets Manager
-- `AWS_SECRET_ACCESS_KEY`: Used to access Secrets Manager
-- `AWS_REGION`: Region for Secrets Manager
-- `AWS_SECRET_NAME`: Name/ARN of the secret containing application secrets
+The queue names are fixed by the contract and are deliberately not
+configurable. A name that differed between the two repositories would look
+like an idle worker rather than a misconfiguration.
 
-### Cloudflare R2 (S3 compatible)
+## AWS Secrets Manager
 
-- `CLOUDFLARE_R2_ENDPOINT`: R2 S3-compatible endpoint URL
-- `CLOUDFLARE_R2_BUCKET_NAME`: R2 bucket name
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+- `AWS_SECRET_NAME`
 
-### Limits & Scanning
+The secret is JSON and must carry exactly these three:
 
-- `MAX_FILE_BYTES`: Maximum file size to process (defaults to 10MB)
-- `SCAN_TIMEOUT_MS`: Timeout for AV scanning (e.g. 120000ms)
-- `VALIDATION_READ_BYTES`: How many bytes to read for magic-byte validation (e.g. 262144)
-- `CLAMAV_MODE`: `clamscan` or `instream` (if using local ClamAV)
-- `CLAMAV_PATH`: Path to clamscan binary
+- `dbPassword`
+- `cloudflareR2QuarantineReadKey`
+- `cloudflareR2QuarantineReadSecret`
+
+The R2 pair is named `Read` because that is all the token behind it may do.
+See `security.md`.
+
+## Cloudflare R2
+
+- `CLOUDFLARE_R2_ENDPOINT`: the account's S3-compatible endpoint
+- `CLOUDFLARE_R2_QUARANTINE_BUCKET_NAME`: the private quarantine bucket
+
+One bucket serves every environment, with the environment as the first
+segment of each key — [ADR-0017](../../../Plans/Fleets/ADR/0017-one-quarantine-bucket-with-environment-prefixes.md).
+There is no variable for the delivery bucket, because the worker has no
+credential for it.
+
+## Scanning
+
+- `SCAN_CONCURRENCY`: how many objects at once. Default 1; ClamAV's memory is
+  the binding constraint, and ADR-0005 has the sizing.
+- `MAX_FILE_BYTES`: default 10 MiB. Larger objects are refused, not truncated.
+- `SCAN_TIMEOUT_MS`: default 120,000.
+- `SCAN_LEASE_MS`: default 300,000. How long a claim holds an attempt before
+  another worker may take it.
+- `SCAN_HEARTBEAT_MS`: default 30,000.
+- `SCAN_MAX_ATTEMPTS`: default 3. Beyond this an attempt is refused with
+  `RETRY_BUDGET_EXHAUSTED`, so the backend hears a final answer rather than
+  leaving an upload in limbo.
+
+`SCAN_HEARTBEAT_MS` and `SCAN_TIMEOUT_MS` must both be shorter than
+`SCAN_LEASE_MS`. A heartbeat slower than the lease renews nothing, and a scan
+that outlasts its own claim will have its answer discarded. The worker checks
+both at startup.
+
+## ClamAV
+
+- `CLAMAV_HOST`: default `127.0.0.1`
+- `CLAMAV_PORT`: default `3310`
+- `CLAMAV_MAX_DEFINITION_AGE_HOURS`: default 48
+
+Signatures older than the maximum age never produce a clean verdict, and the
+readiness probe fails while they are — ADR-0005 decision 4. A scanner that
+will not say how old its signatures are counts as too old.
+
+`CLAMAV_MODE` and `CLAMAV_PATH` are gone: the worker speaks to `clamd` over
+its socket rather than running a binary.
 
 ## Optional
 
-- `TRUST_PROXY_HOPS`: Express trust proxy hops (default is `1`)
-- `STARTUP_DIAGNOSTICS`: `true` | `false` (default `false`). Logs memory usage at startup.
+- `STARTUP_DIAGNOSTICS`: `true` | `false`, default false. Logs memory at
+  startup.
+- `TRUST_PROXY_HOPS`
 
-## AWS Secrets Manager secret shape
+## Gone since FC-010
 
-The secret referenced by `AWS_SECRET_NAME` is expected to be JSON with at least:
-
-- `dbPassword`: Used for the PostgreSQL password
-- `cloudflareR2AccessKey`: Used to access R2
-- `cloudflareR2Secret`: Used to access R2
-- `cloudmersiveApiKey`: Used for virus scanning (if using Cloudmersive integration)
-
-## Validation
-
-- Startup validation runs via `ConfigCheckService`; missing or invalid required values will prevent the worker from starting.
+| Variable | Why |
+| --- | --- |
+| `TYPEORM_SYNCHRONIZE` | Refused outright; the database is shared. |
+| `FILE_SCAN_QUEUE`, `FLEET_IMPORT_QUEUE` | Queue names are fixed by the contract. |
+| `ENQUEUE_NEXT_ON_PASSED` | The worker no longer triggers the import. |
+| `CLOUDFLARE_R2_BUCKET_NAME` | Replaced by the quarantine bucket. |
+| `VALIDATION_READ_BYTES` | CSV validation moved to the backend ingress — ADR-0001. |
+| `CLAMAV_MODE`, `CLAMAV_PATH` | No subprocess; `clamd` over a socket. |
+| `cloudmersiveApiKey` in the secret | Cloudmersive is not used in v1 — ADR-0005. |
