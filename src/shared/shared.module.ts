@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+
 import { SecretsService } from './secrets/secrets.service';
 
 @Module({

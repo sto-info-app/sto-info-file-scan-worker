@@ -1,4 +1,5 @@
 import { Logger, Module, OnModuleInit } from '@nestjs/common';
+
 import { DatabaseService } from './database.service';
 
 @Module({
@@ -6,11 +7,11 @@ import { DatabaseService } from './database.service';
   exports: [DatabaseService],
 })
 export class DatabaseModule implements OnModuleInit {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(private readonly _databaseService: DatabaseService) {}
 
   async onModuleInit() {
     try {
-      await this.databaseService.setDatabaseTimezone();
+      await this._databaseService.setDatabaseTimezone();
       Logger.log('Database timezone set successfully.', 'DatabaseModule');
     } catch (error) {
       Logger.error('Failed to set database timezone:', error, 'DatabaseModule');

@@ -1,5 +1,6 @@
-import { getAppVersion } from './version.utility';
 import * as fs from 'node:fs';
+
+import { getAppVersion } from './version.utility';
 
 jest.mock('node:fs');
 

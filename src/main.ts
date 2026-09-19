@@ -1,13 +1,16 @@
-import { config } from 'dotenv';
-config({ path: 'config/environments/.env' });
+import { performance } from 'node:perf_hooks';
 
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { performance } from 'node:perf_hooks';
+
+import { config } from 'dotenv';
 
 import { AppModule } from './app.module';
 import { ConfigCheckService } from './config-check/config-check.service';
+import { readWorkerSettings } from './config/worker-settings';
 import { getLogLevelsForEnvironment } from './shared/constants/logging.constants';
+
+config({ path: 'config/environments/.env' });
 
 function toMb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
@@ -30,6 +33,7 @@ async function bootstrap() {
 
   const configCheckService = new ConfigCheckService();
   configCheckService.validateInput(process.env);
+  readWorkerSettings(process.env);
 
   const logLevels = getLogLevelsForEnvironment(
     process.env.NODE_ENV,
@@ -55,6 +59,13 @@ async function bootstrap() {
       `after NestFactory.create (+${(performance.now() - startTime).toFixed(0)}ms)`,
     );
   }
+
+  // Graceful shutdown. BullMQ's Nest integration closes its workers on
+  // the shutdown signal, which finishes the job in hand before the
+  // process exits; without this the container would be killed mid-scan
+  // and the attempt would wait out its whole lease before anybody could
+  // pick it up again.
+  app.enableShutdownHooks();
 
   app.useGlobalPipes(
     new ValidationPipe({
