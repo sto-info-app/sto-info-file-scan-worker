@@ -1,0 +1,90 @@
+name: npm audit
+
+on:
+  pull_request:
+    branches:
+      - development
+      - production
+    types: [opened, synchronize, reopened, ready_for_review]
+
+  push:
+    branches:
+      - development
+      - production
+
+  schedule:
+    # Run weekly on Sunday at midnight to catch new vulnerabilities
+    - cron: '0 0 * * 0'
+
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  NODE_VERSION: 24.21.0
+
+jobs:
+  check_changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pkg_changed: ${{ steps.filter.outputs.pkg_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            pkg_changed:
+              - 'package.json'
+              - 'package-lock.json'
+
+  audit:
+    name: 'npm audit'
+    needs: check_changes
+    # Skip for Dependabot
+    # Skip draft PRs
+    # Skip version bump PRs
+    # Run if pkg_changed or push or schedule/dispatch
+    if: |
+      github.actor != 'dependabot[bot]' &&
+      (needs.check_changes.outputs.pkg_changed == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve cache toggle
+        id: cache-toggle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          value=$(gh api repos/$REPO/actions/variables/CACHE_NODE_MODULES --jq '.value' 2>/dev/null || echo '')
+          if [ -z "$value" ]; then
+            value=true
+          fi
+          echo "use_cache=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Load & cache dependencies
+        uses: ./.github/actions/cached-dependencies
+        with:
+          use-cache: ${{ steps.cache-toggle.outputs.use_cache }}
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: npm audit (production dependencies)
+        run: npm audit --audit-level=high --omit=dev
