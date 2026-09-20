@@ -1,0 +1,59 @@
+name: Mutation Testing (Full)
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Run every Sunday at midnight
+  workflow_dispatch: # Allow manual trigger
+
+permissions: {}
+
+env:
+  NODE_VERSION: 24.21.0
+
+jobs:
+  stryker_full:
+    name: Full Mutation Analysis
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # This repository's mutate set is 17 files against the backend's 237, so
+    # a full run here is nothing like the backend's multi-hour one. The budget
+    # is a backstop against a hung run, not a figure the run is expected to
+    # approach; raise it if the worker ever grows enough to need it.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Load & cache dependencies
+        uses: ./.github/actions/cached-dependencies
+        with:
+          use-cache: true
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run Stryker (Full)
+        # NODE_OPTIONS raises the parent Stryker process; testRunnerNodeArgs in
+        # stryker.config.mjs raises the child workers to the same 8GB ceiling.
+        # No --concurrency override: the backend needs one to keep a ~9k mutant
+        # dry run inside a 16GB runner, and this repository's set is too small
+        # for that to bite, so the config default of 4 stands.
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: npx stryker run
+
+      - name: Upload Mutation Report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: stryker-full-report
+          path: reports/mutation/
+          retention-days: 30
