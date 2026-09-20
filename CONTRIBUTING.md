@@ -8,7 +8,7 @@ Thank you for considering contributing to sto-info-file-scan-worker! We welcome 
 2. **Clone your fork**: Clone your forked repository to your local machine.
 
 ```sh
-git clone https://github.com/steverobertsuk/sto-info-file-scan-worker.git
+git clone https://github.com/sto-info-app/sto-info-file-scan-worker.git
 ```
 
 3. **Create a branch**: Create a new branch for your changes.
@@ -21,7 +21,7 @@ git checkout -b my-feature-branch
 5. **Commit your changes**: Commit your changes with a descriptive commit message.
 
 ```sh
-git commit -m "feat: add support for new file format"
+git commit -s -m "feat: add support for new file format"
 ```
 
 - Please use [conventional commit messages](https://www.conventionalcommits.org/en/v1.0.0/) for your commits. This helps in keeping the commit history clean and easy to understand.
@@ -44,12 +44,86 @@ If you find a bug or have a feature request, please open an issue on GitHub.
 
 ## Style Guide
 
-- Follow the existing code style (Prettier and ESLint).
+- Follow the existing code style.
 - Write clear and concise commit messages.
-- Ensure your code passes all tests and linting before submitting a pull request.
+- Ensure your code passes all tests before submitting a pull request.
+
+### Git hooks
+
+[Husky](https://typicode.github.io/husky/) installs two hooks when you run
+`npm install`:
+
+- **`pre-commit`** ([.husky/pre-commit](.husky/pre-commit)) runs
+  [lint-staged](https://github.com/lint-staged/lint-staged) over the files you
+  have staged. Staged TypeScript gets `eslint --fix` and `prettier --write`, so
+  formatting and import order are corrected in place and restaged. Import order
+  is enforced rather than advisory — the lint-test workflow runs
+  `npm run format:check` as its own step — so let the hook order your imports
+  instead of arranging them by hand.
+- **`commit-msg`** ([.husky/commit-msg](.husky/commit-msg)) requires a
+  `Signed-off-by` trailer on every commit. Use `git commit -s`, or add the line
+  yourself. DCO is also enforced in CI by the
+  [DCO workflow](.github/workflows/dco.yml).
+
+Write hook scripts as bare commands: no shebang, and no
+`. "$(dirname "$0")/_/husky.sh"` line. Husky invokes them through `.husky/_/h`
+with `sh -e` and already puts `node_modules/.bin` on `PATH`. Both lines are
+deprecated in husky 9 and will break the hook in husky 10.
+
+To skip the hooks for a single commit — rarely a good idea — use
+`git commit --no-verify`.
+
+### Formatting
+
+Prettier owns the layout of the TypeScript sources, including import order. To
+check or apply it without committing:
+
+```sh
+npm run format:check   # verify, changing nothing
+npm run format         # apply
+```
+
+`format:check` runs as its own step in the
+[lint-test workflow](.github/workflows/lint-test.yml), so unformatted code fails
+the build rather than being quietly corrected.
 
 ## Testing
 
 Please ensure that your changes do not break any existing tests and add new tests for new features.
 
+Coverage is enforced at 100% of statements, branches, functions and lines
+([jest.config.mjs](jest.config.mjs)). The exclusions are listed there and are
+the same set the backend uses: modules, entities, DTOs, enums, constants,
+migrations and the entry point. A new file that is none of those needs tests.
+
+```sh
+npm run test           # the suite
+npm run test:cov       # the suite with coverage, as CI runs it
+npm run test:mutation  # Stryker, full
+```
+
 Thank you for your contributions!
+
+## Troubleshooting
+
+### `npm install` or `npm audit` fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`
+
+Some antivirus or internet-security software (e.g. Norton Web/Mail Shield, Avast, Kaspersky) performs HTTPS inspection — it intercepts SSL traffic and re-signs certificates with its own CA. That CA is trusted by Windows, but not by Node.js's built-in certificate bundle, so Node.js rejects the connection.
+
+You can confirm this is the cause by running:
+
+```sh
+node -e "require('https').get('https://registry.npmjs.org', r => console.log(r.socket.getPeerCertificate().issuer))"
+```
+
+If the `CN` in the output is your security software (e.g. `Norton Web/Mail Shield Root`) rather than a standard CA (DigiCert, Let's Encrypt, etc.), apply the fix below.
+
+**Fix:** Tell Node.js to use the Windows system certificate store, which already trusts your security software's CA. Set this once as a persistent user environment variable:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("NODE_OPTIONS", "--use-system-ca", "User")
+```
+
+Then open a new terminal — the setting takes effect immediately for all subsequent Node.js processes, including `npm`.
+
+> This flag (`--use-system-ca`) requires Node.js 24 or later. GitHub Actions runners are unaffected because they connect to the npm registry directly without any SSL interception.
