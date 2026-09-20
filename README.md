@@ -35,6 +35,11 @@ Documentation is in [docs/](docs/).
 - [docs/worker-architecture.md](docs/worker-architecture.md)
 - [docs/queues.md](docs/queues.md)
 - [docs/database.md](docs/database.md)
+- [docs/github/](docs/github/) — how the CI, quality and security automation is
+  wired up, and where to look when a check fails.
+
+The security *policy* — reporting a vulnerability, supported versions, the
+dependency override this repository carries — is in [SECURITY.md](SECURITY.md).
 
 ## Getting Started
 
@@ -51,7 +56,7 @@ Documentation is in [docs/](docs/).
 1. Clone the repository:
 
 ```sh
-git clone https://github.com/steverobertsuk/sto-info-file-scan-worker.git
+git clone https://github.com/sto-info-app/sto-info-file-scan-worker.git
 ```
 
 2. Navigate to the project directory:
@@ -72,16 +77,20 @@ Environment files live in [config/environments/](config/environments/):
 
 - `config/environments/.env.example`: the template, and the only one. There
   used to be a second at the repository root that disagreed with it; see
-  [docs/environment-variables.md](docs/environment-variables.md).
+  [docs/environment-variables.md](docs/environment-variables.md). Note that
+  the backend calls its equivalent `template.env` — this repository keeps
+  `.env.example` deliberately, for the reason recorded in that document.
 - `config/environments/.env`: the active local environment file (not
   committed).
-- `config/environments/.env.example`: A safe example for hosted/production environments.
 
 **Local Setup:**
 
-1. Copy `config/environments/template.env` to `config/environments/.env`.
+1. Copy `config/environments/.env.example` to `config/environments/.env`.
 2. Fill in your local database and Redis details.
-3. Provide your AWS credentials to allow the app to pull sensitive secrets (dbPassword, API keys).
+3. Provide your AWS credentials to allow the app to pull sensitive secrets
+   (`dbPassword` and the read-only quarantine bucket keys) from AWS Secrets
+   Manager. See [docs/security.md](docs/security.md) for what those
+   credentials are permitted to do, and what they deliberately are not.
 
 ### Database
 
@@ -107,12 +116,24 @@ npm run start:dev
 ### Running Tests
 
 ```sh
-npm test
+npm test           # the suite
+npm run test:cov   # the suite with coverage, as CI runs it
+npm run verify     # audit, lint, format check, coverage and build
 ```
+
+Coverage is enforced at 100%. See
+[docs/github/QUALITY-AUTOMATION.md](docs/github/QUALITY-AUTOMATION.md).
 
 ## Contributing
 
 We welcome contributions! Please read our [contributing guidelines](CONTRIBUTING.md) for more details.
+
+Commits need a DCO sign-off (`git commit -s`) and a Conventional Commits
+subject; both are checked locally by a git hook and again in CI.
+
+## Security
+
+Please report vulnerabilities privately — see [SECURITY.md](SECURITY.md).
 
 ## Code Quality
 
