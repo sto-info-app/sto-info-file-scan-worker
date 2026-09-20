@@ -6,7 +6,10 @@ import {
   ScanRequestMessage,
   ScanVerdictMessage,
 } from '../../contract/file-scan-contract';
-import { sniffContentType } from '../../quarantine/content-sniff';
+import {
+  declarationHolds,
+  sniffContentType,
+} from '../../quarantine/content-sniff';
 import {
   MeasuredStream,
   ObjectTooLargeError,
@@ -15,6 +18,10 @@ import {
   QuarantineObjectMissingError,
   QuarantineObjectService,
 } from '../../quarantine/quarantine-object.service';
+import {
+  EngineHealthService,
+  EngineUnfitError,
+} from '../../scanning/engine-health.service';
 import {
   SCAN_ENGINE,
   ScanEngine,
@@ -68,6 +75,12 @@ interface ScanConclusion {
  * **Every failure lands somewhere final or somewhere retryable, never
  * nowhere.** The one exception is a lost lease, where saying nothing is the
  * correct answer because another worker now owns the question.
+ *
+ * **A scanner that is not fit to judge is refused before anything is
+ * claimed.** Stale signatures used to be recorded as a failed attempt, which
+ * spent one of the asset's three tries on a fault that was ours; now the
+ * whole job is turned away and waits — ADR-0020. Nothing here records a
+ * verdict that a scanner did not actually reach.
  */
 @Injectable()
 export class FileScanService {
@@ -79,12 +92,14 @@ export class FileScanService {
    * @param _attempts - The attempt record.
    * @param _quarantine - The private bucket.
    * @param _engine - The scanner.
+   * @param _health - What the scanner last said about itself.
    * @param _settings - The worker's settings.
    */
   constructor(
     private readonly _attempts: FileScanAttemptService,
     private readonly _quarantine: QuarantineObjectService,
     @Inject(SCAN_ENGINE) private readonly _engine: ScanEngine,
+    private readonly _health: EngineHealthService,
     @Inject(WORKER_SETTINGS) private readonly _settings: WorkerSettings,
   ) {}
 
@@ -97,7 +112,18 @@ export class FileScanService {
    *   message is redelivered rather than answered.
    */
   async scan(request: ScanRequestMessage): Promise<ScanVerdictMessage | null> {
-    const description = await this._engine.describe();
+    const health = this._health.current();
+
+    if (!health.healthy || health.description === null) {
+      // Before the claim, and that is the whole point. An unfit scanner is
+      // our fault, not the file's, and a file must not spend one of its
+      // three attempts on it.
+      throw new EngineUnfitError(
+        health.reason ?? 'The scanner cannot be trusted',
+      );
+    }
+
+    const description = health.description;
     const claim = await this._attempts.claim(request, description);
 
     switch (claim.kind) {
@@ -142,9 +168,7 @@ export class FileScanService {
       return null;
     }
 
-    const conclusion = this.isDefinitionStale(description)
-      ? staleDefinitions()
-      : await this.readAndScan(request, attempt.id, leaseToken);
+    const conclusion = await this.readAndScan(request, attempt.id, leaseToken);
 
     const completion: AttemptCompletion = {
       ...conclusion,
@@ -261,6 +285,24 @@ export class FileScanService {
       return refuse('UNSUPPORTED_PAYLOAD', detail, measured, observedSha256);
     }
 
+    if (!declarationHolds(request.declaredContentType, measured.prefix)) {
+      // Last of the refusals, and deliberately so: a file that is both
+      // infected and misdescribed is reported as infected, because that is
+      // the more useful thing for an administrator to be told. This one is
+      // reached only by bytes a scanner was willing to call clean.
+      this._logger.warn(
+        `[conclude] Bytes are not what was declared - AssetId: ${request.assetId}`,
+      );
+
+      return refuse(
+        'CONTENT_TYPE_MISMATCH',
+        `Declared ${request.declaredContentType}; the bytes read as ` +
+          `${sniffContentType(measured.prefix) ?? 'nothing recognised'}`,
+        measured,
+        observedSha256,
+      );
+    }
+
     return {
       state: FileScanAttemptState.CLEAN,
       rejectionCode: null,
@@ -312,26 +354,6 @@ export class FileScanService {
       byteSize: measured.byteSize,
       detectedContentType: sniffContentType(measured.prefix),
     };
-  }
-
-  /**
-   * Reports whether the signature database is too old to trust.
-   *
-   * A scanner that will not say how old its signatures are counts as too old.
-   * ADR-0005 decision 4 puts stale definitions among the conditions that mean
-   * not clean, and silence is not evidence of freshness.
-   *
-   * @param description - What the scanner says it is.
-   * @returns True when its answer cannot be relied on.
-   */
-  private isDefinitionStale(description: ScanEngineDescription): boolean {
-    if (description.definitionsBuiltAt === null) {
-      return true;
-    }
-
-    const age = Date.now() - description.definitionsBuiltAt.getTime();
-
-    return age > this._settings.maxDefinitionAgeMs;
   }
 
   /**
@@ -398,26 +420,5 @@ function refuse(
     byteSize: measured === null ? null : measured.byteSize,
     detectedContentType:
       measured === null ? null : sniffContentType(measured.prefix),
-  };
-}
-
-/**
- * Builds the conclusion for a scanner whose signatures are too old.
- *
- * Not a refusal. The file has done nothing wrong; the scanner has. Refusing
- * it would mean an upload permanently rejected because `freshclam` failed for
- * a day, and ADR-0005 asks only that stale definitions never produce a clean
- * verdict.
- *
- * @returns The conclusion.
- */
-function staleDefinitions(): ScanConclusion {
-  return {
-    state: FileScanAttemptState.FAILED,
-    rejectionCode: null,
-    failureReason: 'The signature database is older than the policy allows',
-    observedSha256: null,
-    byteSize: null,
-    detectedContentType: null,
   };
 }

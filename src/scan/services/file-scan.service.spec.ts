@@ -10,6 +10,11 @@ import {
   QuarantineObjectService,
 } from '../../quarantine/quarantine-object.service';
 import {
+  EngineHealth,
+  EngineHealthService,
+  EngineUnfitError,
+} from '../../scanning/engine-health.service';
+import {
   ScanEngine,
   ScanEngineDescription,
   ScanEngineResult,
@@ -48,11 +53,12 @@ function request(
   changes: Partial<ScanRequestMessage> = {},
 ): ScanRequestMessage {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     assetId: '4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
     objectKey: 'prod/assets/4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
     objectVersion: null,
     expectedSha256: CONTENT_SHA,
+    declaredContentType: 'text/csv',
     policyVersion: 1,
     campaignId: null,
     traceId: '0b5d4f6a-1c2e-4d3b-8a7f-9e8d7c6b5a40',
@@ -110,6 +116,7 @@ describe('FileScanService', () => {
   };
   let quarantine: { getStream: jest.Mock };
   let engine: { describe: jest.Mock; scan: jest.Mock };
+  let health: { current: jest.Mock<() => EngineHealth> };
   let service: FileScanService;
   let completion: AttemptCompletion | undefined;
 
@@ -160,10 +167,20 @@ describe('FileScanService', () => {
       }),
     };
 
+    health = {
+      current: jest.fn(() => ({
+        healthy: true,
+        reason: null,
+        description,
+        checkedAt: new Date(),
+      })),
+    };
+
     service = new FileScanService(
       attempts as unknown as FileScanAttemptService,
       quarantine as unknown as QuarantineObjectService,
       engine as unknown as ScanEngine,
+      health as unknown as EngineHealthService,
       SETTINGS,
     );
   });
@@ -220,13 +237,25 @@ describe('FileScanService', () => {
       );
     });
 
-    it('asks the scanner what it is before it claims anything', async () => {
+    it('reads what the scanner is before it claims anything', async () => {
       // The signature database's identity is part of the idempotency key,
-      // so it has to be known before a row can be written.
+      // so it has to be known before a row can be written. It comes from
+      // the health poll rather than from a conversation of this job's own.
       await service.scan(request());
 
-      expect(engine.describe.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(health.current.mock.invocationCallOrder[0]).toBeLessThan(
         attempts.claim.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('records the signatures that actually judged it', async () => {
+      await service.scan(request());
+
+      expect(completion).toEqual(
+        expect.objectContaining({
+          engineVersion: '1.4.2',
+          signatureVersion: '27412',
+        }),
       );
     });
   });
@@ -304,37 +333,157 @@ describe('FileScanService', () => {
     });
   });
 
-  describe('signatures that are too old to trust', () => {
+  describe('a scanner that is not fit to judge a file', () => {
     it.each([
+      ['it cannot be reached', 'The scanner cannot be reached'],
       [
-        'older than the policy allows',
-        new Date(Date.now() - 72 * 60 * 60 * 1000),
+        'it will not date its signatures',
+        'The scanner did not say how old its signatures are',
       ],
-      ['of an age the scanner would not state', null],
-    ])('fails the attempt when they are %s', async (_label, builtAt) => {
-      // ADR-0005 decision 4. Not a refusal: the file has done nothing wrong
-      // and freshclam has. Refusing would reject every upload for as long as
-      // an update was failing.
-      engine.describe.mockImplementationOnce(() =>
-        Promise.resolve({ ...description, definitionsBuiltAt: builtAt }),
+      [
+        'its signatures are too old',
+        'The signature database is older than the policy allows',
+      ],
+    ])('refuses the job when %s', async (_label, reason) => {
+      health.current.mockReturnValue({
+        healthy: false,
+        reason,
+        description: null,
+        checkedAt: new Date(),
+      });
+
+      await expect(service.scan(request())).rejects.toBeInstanceOf(
+        EngineUnfitError,
       );
-
-      const verdict = await service.scan(request());
-
-      expect(completion?.state).toBe(FileScanAttemptState.FAILED);
-      expect(completion?.failureReason).toContain('older than the policy');
-      expect(verdict?.outcome).toBe('RETRY');
     });
 
-    it('does not open the object at all', async () => {
-      engine.describe.mockImplementationOnce(() =>
-        Promise.resolve({ ...description, definitionsBuiltAt: null }),
+    it('claims nothing, so the asset keeps its whole retry budget', async () => {
+      // The change ADR-0020 made. Stale signatures used to be written as a
+      // failed attempt, and three deliveries during a freshclam outage
+      // rejected a perfectly good upload for a fault that was ours.
+      health.current.mockReturnValue({
+        healthy: false,
+        reason: 'The scanner cannot be reached',
+        description: null,
+        checkedAt: new Date(),
+      });
+
+      await expect(service.scan(request())).rejects.toThrow(
+        'The scanner cannot be reached',
       );
 
-      await service.scan(request());
-
+      expect(attempts.claim).not.toHaveBeenCalled();
       expect(quarantine.getStream).not.toHaveBeenCalled();
       expect(engine.scan).not.toHaveBeenCalled();
+    });
+
+    it('refuses a fitness it has no description for', async () => {
+      health.current.mockReturnValue({
+        healthy: true,
+        reason: null,
+        description: null,
+        checkedAt: new Date(),
+      });
+
+      await expect(service.scan(request())).rejects.toThrow(
+        'The scanner cannot be trusted',
+      );
+    });
+
+    it('never asks the scanner about itself mid-job', async () => {
+      // One conversation per file, not two. The health poll owns the
+      // question now, and asking again here would put a round trip in
+      // front of every scan for an answer that changes a few times a day.
+      await service.scan(request());
+
+      expect(engine.describe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bytes that are not what the upload declared', () => {
+    it('refuses a container declared as a roster export', async () => {
+      quarantine.getStream.mockImplementationOnce(() =>
+        Promise.resolve(Readable.from([PNG])),
+      );
+
+      await service.scan(
+        request({
+          declaredContentType: 'text/csv',
+          expectedSha256: createHash('sha256').update(PNG).digest('hex'),
+        }),
+      );
+
+      expect(completion).toEqual(
+        expect.objectContaining({
+          state: FileScanAttemptState.REJECTED,
+          rejectionCode: 'CONTENT_TYPE_MISMATCH',
+        }),
+      );
+    });
+
+    it('says what was claimed and what was found, for an administrator', async () => {
+      quarantine.getStream.mockImplementationOnce(() =>
+        Promise.resolve(Readable.from([PNG])),
+      );
+
+      await service.scan(
+        request({
+          declaredContentType: 'text/csv',
+          expectedSha256: createHash('sha256').update(PNG).digest('hex'),
+        }),
+      );
+
+      expect(completion?.failureReason).toBe(
+        'Declared text/csv; the bytes read as image/png',
+      );
+    });
+
+    it('reports an infection rather than the mismatch under it', async () => {
+      // Order matters: a file that is both infected and misdescribed is
+      // more usefully reported as infected.
+      quarantine.getStream.mockImplementationOnce(() =>
+        Promise.resolve(Readable.from([PNG])),
+      );
+      engine.scan.mockImplementationOnce(async (source: unknown) => {
+        for await (const _chunk of source as Readable) {
+          void _chunk;
+        }
+
+        return { outcome: 'INFECTED', detail: 'Eicar-Test-Signature FOUND' };
+      });
+
+      await service.scan(
+        request({
+          declaredContentType: 'text/csv',
+          expectedSha256: createHash('sha256').update(PNG).digest('hex'),
+        }),
+      );
+
+      expect(completion?.rejectionCode).toBe('INFECTED');
+    });
+
+    it('says so plainly when the bytes resemble nothing at all', async () => {
+      const gibberish = Buffer.from([0x01, 0x02, 0x03, 0x04]);
+      quarantine.getStream.mockImplementationOnce(() =>
+        Promise.resolve(Readable.from([gibberish])),
+      );
+
+      await service.scan(
+        request({
+          declaredContentType: 'text/csv',
+          expectedSha256: createHash('sha256').update(gibberish).digest('hex'),
+        }),
+      );
+
+      expect(completion?.failureReason).toBe(
+        'Declared text/csv; the bytes read as nothing recognised',
+      );
+    });
+
+    it('lets a roster export through on the text test alone', async () => {
+      await service.scan(request({ declaredContentType: 'text/csv' }));
+
+      expect(completion?.state).toBe(FileScanAttemptState.CLEAN);
     });
   });
 
@@ -650,15 +799,20 @@ describe('FileScanService', () => {
   });
 
   describe('a scanner that cannot be reached at all', () => {
-    it('lets the failure through so the message is delivered again', async () => {
+    it('lets the refusal through so the job is tried again later', async () => {
       // Nothing can be written without a definition epoch, so there is no
-      // attempt to fail. Rethrowing leaves the job in BullMQ's hands, which
-      // is the only place it can be seen.
-      engine.describe.mockImplementationOnce(() =>
-        Promise.reject(new Error('ECONNREFUSED')),
-      );
+      // attempt to fail. Throwing leaves the job in the processor's hands,
+      // which defers it rather than failing it — ADR-0020.
+      health.current.mockReturnValue({
+        healthy: false,
+        reason: 'The scanner cannot be reached',
+        description: null,
+        checkedAt: new Date(),
+      });
 
-      await expect(service.scan(request())).rejects.toThrow('ECONNREFUSED');
+      await expect(service.scan(request())).rejects.toBeInstanceOf(
+        EngineUnfitError,
+      );
       expect(attempts.claim).not.toHaveBeenCalled();
     });
   });
