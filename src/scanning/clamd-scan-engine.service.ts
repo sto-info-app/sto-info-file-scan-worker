@@ -290,7 +290,7 @@ export class ClamdScanEngineService implements ScanEngine {
         header.writeUInt32BE(frame.length, 0);
 
         if (!socket.write(Buffer.concat([header, frame]))) {
-          await once(socket, 'drain');
+          await nextEvent(socket, 'drain');
         }
       }
     }
@@ -303,12 +303,17 @@ export class ClamdScanEngineService implements ScanEngine {
  * `events.once` would do this, but it takes an `EventEmitter` and the socket
  * is deliberately typed as the narrow interface the client actually uses.
  *
+ * It subscribes with `once` and not `on`, which is not a detail: a stream
+ * large enough to fill the socket's buffer waits here repeatedly, and a
+ * listener left behind each time is a leak Node starts warning about after
+ * ten of them.
+ *
  * @param socket - The connection.
  * @param event - The event to wait for.
  */
-function once(socket: ClamdSocket, event: string): Promise<void> {
+function nextEvent(socket: ClamdSocket, event: string): Promise<void> {
   return new Promise<void>(resolve => {
-    socket.on(event, () => resolve());
+    socket.once(event, () => resolve());
   });
 }
 

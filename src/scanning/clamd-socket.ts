@@ -34,6 +34,15 @@ export interface ClamdSocket {
   setTimeout(milliseconds: number): void;
   /** Subscribes to a socket event. */
   on(event: string, listener: (...args: any[]) => void): this;
+  /**
+   * Subscribes to the next occurrence of a socket event only.
+   *
+   * Distinct from `on` because backpressure is waited on once per stalled
+   * write, and a large object stalls many times: subscribing with `on` left
+   * a listener behind for each one, which Node reports as a leak after ten
+   * and which the scan rehearsal duly printed while streaming 64 MiB.
+   */
+  once(event: string, listener: (...args: any[]) => void): this;
   /** Removes every listener this client added. */
   removeAllListeners(): this;
 }
