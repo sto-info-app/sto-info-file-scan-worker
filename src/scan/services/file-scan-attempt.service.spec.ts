@@ -17,11 +17,12 @@ const SETTINGS = {
 } as WorkerSettings;
 
 const REQUEST: ScanRequestMessage = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   assetId: '4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
   objectKey: 'prod/assets/4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
   objectVersion: null,
   expectedSha256: 'a'.repeat(64),
+  declaredContentType: 'text/csv',
   policyVersion: 1,
   campaignId: null,
   traceId: '0b5d4f6a-1c2e-4d3b-8a7f-9e8d7c6b5a40',

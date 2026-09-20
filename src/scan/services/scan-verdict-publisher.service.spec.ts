@@ -10,7 +10,7 @@ import { ScanVerdictPublisherService } from './scan-verdict-publisher.service';
 const ATTEMPT_ID = '7c9e1b2d-3a4f-4e5b-9c8d-1a2b3c4d5e6f';
 
 const VERDICT: ScanVerdictMessage = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   assetId: '4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
   attemptId: ATTEMPT_ID,
   objectKey: 'prod/assets/4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a',
