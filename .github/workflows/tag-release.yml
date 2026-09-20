@@ -1,0 +1,229 @@
+name: Create release tag on production
+
+on:
+  push:
+    branches: [production]
+
+# Declare default permissions as read only.
+permissions: {}
+
+env:
+  NODE_VERSION: 24.21.0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag_release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # To create and push tags
+      pull-requests: write # To unmask the last version bump PR
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # required to create/push tags reliably
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Read version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        env:
+          TAG_NAME: v${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # If tag already exists (e.g. rerun), do nothing
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists. Skipping."
+            exit 0
+          fi
+
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+
+      - name: Prepare PRs for release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Processing PRs for version $VERSION..."
+
+          # 1. Unmask the specific version bump PR for this release
+          BUMP_PR=$(gh pr list --repo "${{ github.repository }}" --state all --limit 1 --search "chore: bump version to $VERSION" --json number --jq '.[0].number' || echo "")
+          if [ -n "$BUMP_PR" ] && [ "$BUMP_PR" != "null" ]; then
+            echo "Unmasking version bump PR #$BUMP_PR (removing version-bump label)"
+            gh pr edit "$BUMP_PR" --repo "${{ github.repository }}" --remove-label version-bump || true
+          fi
+
+          # 2. Auto-label unlabeled PRs based on Conventional Commit prefixes
+          # This ensures they are correctly categorised in the release notes
+          echo "Scanning recent PRs for missing labels..."
+          gh pr list --repo "${{ github.repository }}" --state merged --limit 50 --json number,title,labels --jq '.[] | select(.labels|length == 0) | "\(.number)|\(.title)"' | while read -r line; do
+            PR_NUM=$(echo "$line" | cut -d'|' -f1)
+            PR_TITLE=$(echo "$line" | cut -d'|' -f2)
+            
+            LABEL=""
+            case "${PR_TITLE,,}" in # Convert to lowercase for matching
+              feat*)     LABEL="feature" ;;
+              fix*)      LABEL="fix" ;;
+              chore*)    LABEL="chore" ;;
+              docs*)     LABEL="documentation" ;;
+              test*)     LABEL="test" ;;
+              ci*)       LABEL="ci" ;;
+              refactor*) LABEL="refactor" ;;
+            esac
+            
+            if [ -n "$LABEL" ]; then
+              echo "Auto-labeling PR #$PR_NUM as '$LABEL' based on title: $PR_TITLE"
+              gh pr edit "$PR_NUM" --repo "${{ github.repository }}" --add-label "$LABEL" || true
+            fi
+          done
+
+      - name: Compute tag range for release notes
+        id: tag_range
+        run: |
+          CURRENT_TAG="v${{ steps.version.outputs.version }}"
+          PREVIOUS_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+
+          if [ -z "${PREVIOUS_TAG}" ]; then
+            echo "No previous tag found; cannot generate release notes range." >&2
+            exit 1
+          fi
+
+          CURRENT_DATE=$(git log -1 --format=%cI "$CURRENT_TAG")
+          PREVIOUS_DATE=$(git log -1 --format=%cI "$PREVIOUS_TAG")
+
+          echo "current=${CURRENT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "previous=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
+          echo "current_date=${CURRENT_DATE}" >> "$GITHUB_OUTPUT"
+          echo "previous_date=${PREVIOUS_DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes markdown
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CURRENT_TAG: ${{ steps.tag_range.outputs.current }}
+          PREVIOUS_TAG: ${{ steps.tag_range.outputs.previous }}
+          CURRENT_DATE: ${{ steps.tag_range.outputs.current_date }}
+          PREVIOUS_DATE: ${{ steps.tag_range.outputs.previous_date }}
+          CURRENT_VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const currentTag = process.env.CURRENT_TAG;
+            const previousTag = process.env.PREVIOUS_TAG;
+            const currentDate = new Date(process.env.CURRENT_DATE);
+            const previousDate = new Date(process.env.PREVIOUS_DATE);
+            const currentVersion = process.env.CURRENT_VERSION;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const excludedAuthors = new Set(['github-actions[bot]']);
+            const excludedLabels = new Set(['version-bump']);
+
+            const isCurrentVersionBump = (title) => {
+              const t = String(title || '').toLowerCase();
+              return t.includes(`bump version to ${currentVersion}`);
+            };
+
+            const classify = (title) => {
+              const t = String(title || '').trim().toLowerCase();
+              if (t.startsWith('feat')) return '🚀 Features';
+              if (t.startsWith('fix')) return '🐛 Bug Fixes';
+              if (t.startsWith('docs')) return '📖 Documentation';
+              if (t.startsWith('ci')) return '⚙️ CI/CD';
+              if (t.startsWith('test')) return '🧪 Testing';
+              return '🧹 Maintenance';
+            };
+
+            const formatPrLine = (pr) => {
+              const login = pr.user?.login ? `@${pr.user.login}` : '@unknown';
+              return `* ${pr.title} by ${login} in ${pr.html_url}`;
+            };
+
+            const allClosedIntoDevelopment = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'closed',
+              base: 'development',
+              per_page: 100,
+              sort: 'updated',
+              direction: 'desc',
+            });
+
+            const prsInRange = allClosedIntoDevelopment
+              .filter((pr) => pr.merged_at)
+              .filter((pr) => {
+                const mergedAt = new Date(pr.merged_at);
+                return mergedAt > previousDate && mergedAt <= currentDate;
+              })
+              .filter((pr) => !excludedAuthors.has(pr.user?.login || ''))
+              .filter((pr) => {
+                const labels = (pr.labels || []).map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean);
+                const hasExcludedLabel = labels.some((l) => excludedLabels.has(String(l)));
+                return !hasExcludedLabel || isCurrentVersionBump(pr.title);
+              });
+
+            // Keep deterministic order: oldest -> newest
+            prsInRange.sort((a, b) => new Date(a.merged_at) - new Date(b.merged_at));
+
+            const buckets = new Map();
+            for (const pr of prsInRange) {
+              const category = classify(pr.title);
+              if (!buckets.has(category)) buckets.set(category, []);
+              buckets.get(category).push(pr);
+            }
+
+            const orderedCategories = [
+              '🚀 Features',
+              '🐛 Bug Fixes',
+              '📖 Documentation',
+              '⚙️ CI/CD',
+              '🧪 Testing',
+              '🧹 Maintenance',
+            ];
+
+            let md = '';
+            md += `<!-- Release notes generated using configuration in .github/release.yml at ${currentTag} -->\n\n`;
+            md += `## What's Changed\n`;
+
+            for (const category of orderedCategories) {
+              const items = buckets.get(category);
+              if (!items || items.length === 0) continue;
+              md += `### ${category}\n`;
+              for (const pr of items) {
+                md += `${formatPrLine(pr)}\n`;
+              }
+              md += `\n`;
+            }
+
+            md += `\n**Full Changelog**: https://github.com/${owner}/${repo}/compare/${previousTag}...${currentTag}\n`;
+
+            fs.writeFileSync('release-notes.md', md);
+
+      - name: Create Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          generate_release_notes: false
+          body_path: release-notes.md
+          draft: false
+          prerelease: false

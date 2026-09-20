@@ -1,0 +1,36 @@
+changelog:
+  exclude:
+    labels:
+      - version-bump
+      - version-sync
+    authors:
+      - github-actions[bot]
+  categories:
+    - title: 🚀 Features
+      labels:
+        - enhancement
+        - feature
+    - title: 🐛 Bug Fixes
+      labels:
+        - bug
+        - fix
+    - title: 🧹 Maintenance
+      labels:
+        - chore
+        - refactor
+        - dependencies
+    - title: 🧪 Testing
+      labels:
+        - test
+        - testing
+    - title: 📖 Documentation
+      labels:
+        - documentation
+        - docs
+    - title: ⚙️ CI/CD
+      labels:
+        - ci
+        - ci-cd
+        - github-actions
+    - title: 🔩 Other Changes
+      labels: []
