@@ -13,19 +13,38 @@ on:
       - development
       - production
 
-permissions:
-  contents: read
-  actions: read
+permissions: {}
 
 env:
-  NODE_VERSION: 24
+  NODE_VERSION: 24.21.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  check_changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      src_changed: ${{ steps.filter.outputs.src_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            src_changed:
+              - 'src/**'
+              - 'config/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig.json'
+              - 'jest.config.mjs'
+
   dependabot_note:
+    needs: check_changes
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -35,8 +54,8 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Comment on Dependabot PR (private dependencies)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+      - name: Comment on Dependabot PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const owner = context.repo.owner;
@@ -46,12 +65,14 @@ jobs:
             const commentLines = [
               "### CI skipped for Dependabot PRs",
               "",
-              "This repository uses **private npm dependencies** (e.g. Font Awesome Pro)",
-              "which require secrets that are **not available to Dependabot workflows**.",
+              "This repository skips the full pipeline on Dependabot PRs, matching",
+              "the rest of the project so that one dependency update behaves the",
+              "same way whichever repository it lands in.",
               "",
               "For this reason:",
               "- Dependency installation, linting, tests, and builds are intentionally **skipped**",
-              "- Dependency security is still covered by **Dependabot alerts**",
+              "- Dependency security is still covered by **Dependabot alerts**, the",
+              "  scheduled **Dependency Audit** workflow, and **Dependency Review** on the PR",
               "- Full CI runs for all human-authored PRs",
               "",
               "This behaviour is intentional and documented to avoid misleading CI failures."
@@ -79,29 +100,30 @@ jobs:
             }
 
   lint_and_test:
-    # Don't run for draft PRs (but still run for pushes)
-    # Skip version bump PRs from github-actions bot or with version bump branch pattern
+    name: 'Lint and Test'
+    needs: check_changes
+    # Skip if dependabot
+    # Skip draft PRs
+    # ONLY RUN if src_changed is true OR if it's a push (to keep badges updated)
     if: |
       github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.draft == false) &&
-      !(github.event_name == 'pull_request' && (
-        (github.event.pull_request.user.login == 'github-actions[bot]' && startsWith(github.event.pull_request.title, 'chore: bump version to')) ||
-        startsWith(github.event.pull_request.head.ref, 'chore/bump-version-to-')
-      ))
+      (needs.check_changes.outputs.src_changed == 'true' || github.event_name == 'push') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
+      pull-requests: write
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Use Node.js
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -126,16 +148,37 @@ jobs:
       - name: Run Linter
         run: npm run lint
 
+      - name: Check formatting
+        run: npm run format:check
+
       - name: Run Tests (with coverage)
         run: npm run test:cov
 
       - name: Verify coverage exists
         run: test -f reports/coverage/lcov.info
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: reports/coverage/lcov.info
+          fail_ci_if_error: false
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: reports/junit/junit.xml
+          report_type: test_results
+          fail_ci_if_error: false
+
       - name: SonarQube Cloud Scan
         # Skip for Dependabot PRs (no code changes, avoids errors)
         if: github.actor != 'dependabot[bot]'
-        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -147,60 +190,25 @@ jobs:
             -Dsonar.tests=src
             -Dsonar.test.inclusions=**/*.spec.ts
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/reports/**,**/*.spec.ts,**/*.test.ts
-            -Dsonar.coverage.exclusions=src/main.ts,src/environments/**,src/database/migrations/**,src/**/index.ts,src/**/index.js,src/app.module.ts,src/**/*.module.ts,src/**/*.dto.ts,src/**/*.entity.ts,src/**/*.model.ts,src/**/*.models.ts,src/**/*.interface.ts,src/**/*.interfaces.ts,src/**/*.enum.ts,src/**/*.constant.ts,src/**/*.constants.ts,src/**/tests/**,src/**/test/**,src/**/__tests__/**,src/views/copy-email-templates-to-dist.js
+            -Dsonar.coverage.exclusions=src/main.ts,src/database/migrations/**,src/**/index.ts,src/app.module.ts,src/**/*.module.ts,src/**/*.dto.ts,src/**/*.entity.ts,src/**/*.interface.ts,src/**/*.interfaces.ts,src/**/*.enum.ts,src/**/*.constant.ts,src/**/*.constants.ts,src/**/tests/**,src/**/test/**,src/**/__tests__/**
             -Dsonar.issue.ignore.multicriteria=e1,e2
             -Dsonar.issue.ignore.multicriteria.e1.ruleKey=typescript:S1313
             -Dsonar.issue.ignore.multicriteria.e1.resourceKey=**/*.spec.ts,**/*.test.ts,**/__tests__/**,**/test/**,**/tests/**
             -Dsonar.issue.ignore.multicriteria.e2.ruleKey=secrets:S6684
             -Dsonar.issue.ignore.multicriteria.e2.resourceKey=**/*.spec.ts,**/*.test.ts,**/__tests__/**,**/test/**,**/tests/**
 
-      - name: Restore Stryker incremental cache
-        # Only run on PRs, skip for Dependabot
-        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
-        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+      - name: Summarize Results
+        if: always()
+        run: npm run summary:ci
+        env:
+          CI_SUMMARY_FILE: ci-summary.md
+
+      - name: Post PR Comment
+        if: always() && github.event_name == 'pull_request'
+        uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59 # v3.12.0.8.3.12.0
         with:
-          path: .stryker-tmp/incremental.json
-          key: stryker-incremental-${{ github.base_ref }}-${{ hashFiles('src/**/*.ts') }}
-          restore-keys: |
-            stryker-incremental-${{ github.base_ref }}-
-            stryker-incremental-
-
-      - name: Run Incremental Mutation Testing
-        # Only run on PRs, skip for Dependabot (not needed for dependency updates)
-        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
-        shell: bash
-        run: |
-          # Fetch the base branch to compare against
-          git fetch origin ${{ github.base_ref }} --depth=1
-
-          # Get changed files in src/ that match mutation criteria (exclude specs, modules, static pages, etc.)
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | \
-            grep '^src/.*\.ts$' | \
-            grep -v '\.d\.ts$' | \
-            grep -v '\.spec\.ts$' | \
-            grep -v '\.module\.ts$' | \
-            grep -v 'environments/' | \
-            grep -v '\.model\.ts$' | \
-            grep -v '\.models\.ts$' | \
-            grep -v '\.interface\.ts$' | \
-            grep -v '\.interfaces\.ts$' | \
-            grep -v '\.enum\.ts$' | \
-            grep -v '\.constant\.ts$' | \
-            grep -v '\.constants\.ts$' | \
-            grep -v 'main.ts' | \
-            tr '\n' ',' | sed 's/,$//' || true)
-
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "No relevant source files changed. Skipping mutation testing."
-          else
-            echo "Mutating files: $CHANGED_FILES"
-            # Run with incremental mode and limited concurrency
-            npx stryker run \
-              --mutate "$CHANGED_FILES" \
-              --concurrency 2 \
-              --incremental \
-              --force
-          fi
+          message-path: ci-summary.md
+          allow-repeats: true
 
       - name: Build (push only)
         if: github.event_name == 'push'
