@@ -61,7 +61,7 @@ absence rather than as a rule.
 | Column | Notes |
 | --- | --- |
 | `id` | The attempt, carried in the verdict. |
-| `assetId` | Foreign key to `sto_info_app.file_asset`, `ON DELETE RESTRICT`. |
+| `assetId` | Foreign key to `sto_info_app.file_asset`, `ON DELETE RESTRICT`. On PostgreSQL 18 a delete it blocks raises SQLSTATE `23001`, not `23503`. |
 | `objectKey`, `objectVersion` | Where the bytes were. The version is null on R2. |
 | `expectedSha256` | What the registry recorded when the bytes were stored. |
 | `policyVersion`, `definitionEpoch` | Which policy and which signatures. |
@@ -145,7 +145,7 @@ what they are meant to reject, is the question that matters on deploy day.
 npm run rehearse:migration
 ```
 
-This starts a throwaway `postgres:17-alpine` container, stubs the one backend
+This starts a throwaway `postgres:18-alpine` container, stubs the one backend
 table the foreign key points at, replays the migration, and then deliberately
 tries to break every rule it claims to enforce — forty-two assertions,
 including a ten-writer race on the claim statement and a second race on the
