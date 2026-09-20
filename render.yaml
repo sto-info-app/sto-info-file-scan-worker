@@ -1,0 +1,108 @@
+# The worker as Render runs it.
+#
+# A background worker on the Docker runtime, in Frankfurt. Three choices are
+# recorded here and argued in ADR-0020.
+#
+# **Docker rather than the Node runtime**, because the scanner lives in the
+# image. Render's Node runtime installs no `clamd`, and ADR-0005 put the
+# scanner beside the worker rather than behind an API.
+#
+# **A background worker rather than a private service.** Background workers
+# are not probed, so `/health/ready` is never asked and nothing outside the
+# process acts on the answer. What enforces readiness instead is the worker
+# itself: the health poll pauses consumption while the scanner is unfit, so
+# an instance that cannot scan takes no work rather than failing it. The
+# endpoint stays for a human and for local use.
+#
+# **Frankfurt**, because uploaded roster material is personal data about
+# real people and ADR-0001's privacy position is easier to hold with it
+# inside the EU.
+#
+# **The plan is a 2 GB one**, and that is a measured figure rather than
+# ClamAV's general guidance of 3 GiB minimum and 4 GiB preferred. Against
+# this image: 960 MiB idle, 995 MiB while scanning four 8 MiB objects at
+# once, and — with `ConcurrentDatabaseReload no` in clamd.conf — 1,068 MiB
+# through a signature reload rather than the 2,022 MiB a concurrent reload
+# costs. The numbers and the trade are in ADR-0020.
+#
+# `plan` is deliberately not written below: Render's plan names change, and
+# a wrong one here fails a deploy rather than a review. Set it in the
+# dashboard to the smallest plan with 2 GB of memory.
+
+services:
+  - type: worker
+    name: sto-info-file-scan-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    branch: production
+    autoDeploy: false
+    envVars:
+      # Both halves of the contract have to agree, and the worker refuses to
+      # start against a version it does not support rather than running
+      # against a shape it half-understands.
+      - key: FILE_SCAN_SCHEMA_VERSION
+        value: 2
+
+      # The schema this repository owns. The worker refuses to start if this
+      # is anything else, because its migrations name it in their SQL.
+      - key: DB_SCHEMA
+        value: sto_info_worker
+
+      # Never true. This worker shares a database with the backend, and
+      # synchronise against a shared database will drop another
+      # application's columns to make the schema match its own entities.
+      - key: TYPEORM_SYNCHRONIZE
+        value: false
+
+      # One object at a time by default. ClamAV's memory is the binding
+      # constraint rather than CPU, and raising this multiplies the peak
+      # rather than the throughput.
+      - key: SCAN_CONCURRENCY
+        value: 1
+
+      - key: CLAMAV_HOST
+        value: 127.0.0.1
+      - key: CLAMAV_PORT
+        value: 3310
+
+      # The policy that makes an update failure safe: after this long
+      # without fresh signatures the worker stops scanning rather than
+      # scanning with old ones. Twelve update attempts a day means
+      # twenty-four have to fail before it bites.
+      - key: CLAMAV_MAX_DEFINITION_AGE_HOURS
+        value: 48
+
+      - key: CLAMAV_HEALTH_POLL_MS
+        value: 30000
+      - key: SCAN_UNHEALTHY_RETRY_MS
+        value: 60000
+
+      # Everything below is environment-specific or secret and is set in the
+      # dashboard rather than here.
+      - key: AWS_SECRET_NAME
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: CLOUDFLARE_R2_ENDPOINT
+        sync: false
+      - key: CLOUDFLARE_R2_QUARANTINE_BUCKET_NAME
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+
+      # There is no DB_PASSWORD. The database password and the quarantine
+      # keys come from AWS Secrets Manager at start-up, which is why these
+      # two are the only credentials the platform holds.
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false

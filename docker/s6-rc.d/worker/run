@@ -1,0 +1,7 @@
+#!/command/execlineb -P
+# The application. Starts whether or not clamd is ready: it finds the
+# scanner unfit, pauses its own queue and waits — ADR-0020.
+cd /app
+fdmove -c 2 1
+with-contenv
+node dist/src/main

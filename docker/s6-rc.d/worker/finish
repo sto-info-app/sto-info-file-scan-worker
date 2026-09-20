@@ -1,0 +1,4 @@
+#!/command/execlineb -S1
+# The worker is what this container is for. If it stops, the container
+# stops, rather than sitting there with a scanner nobody is asking anything.
+/run/s6/basedir/bin/halt

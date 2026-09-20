@@ -1,0 +1,27 @@
+# What must not reach the build context.
+#
+# The first two entries are the ones that matter: `.env` files hold real
+# credentials for the quarantine bucket and the database, and a build
+# context is not a secret store. Everything else is here to keep the image
+# small and the layer cache useful.
+.env
+.env.*
+config/environments/.env*
+!config/environments/.env.example
+
+node_modules
+dist
+coverage
+reports
+.stryker-tmp
+
+.git
+.github
+.husky
+.vscode
+docs
+scripts
+test
+
+*.md
+!README.md

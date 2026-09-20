@@ -1,0 +1,5 @@
+#!/command/execlineb -P
+# The scanner. Runs as clamav, listens on loopback only, and logs where the
+# platform can see it.
+fdmove -c 2 1
+/usr/sbin/clamd --config-file=/etc/clamav/clamd.conf

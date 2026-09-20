@@ -1,0 +1,15 @@
+#!/command/execlineb -P
+# The worker's own schema, brought up to date before the worker runs.
+#
+# A oneshot rather than part of the application's own start-up: it must
+# happen once per container and not once per restart of the application, and
+# a failure here must stop the worker starting rather than be retried in a
+# loop behind it.
+#
+# The backend's migrations must already have run. The cross-schema key into
+# sto_info_app.file_asset fails loudly if they have not, which is the whole
+# of the deploy ordering rule.
+cd /app
+fdmove -c 2 1
+with-contenv
+npm run migration:run

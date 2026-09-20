@@ -1,0 +1,5 @@
+#!/command/execlineb -P
+# The updater. Depends on clamd only so that the notification it sends after
+# an update has something to arrive at.
+fdmove -c 2 1
+/usr/bin/freshclam --config-file=/etc/clamav/freshclam.conf --daemon --foreground
