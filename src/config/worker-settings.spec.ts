@@ -39,7 +39,7 @@ describe('readWorkerSettings', () => {
   describe('the settings it produces', () => {
     it('fills in every default', () => {
       expect(readWorkerSettings(environment())).toEqual({
-        schemaVersion: 1,
+        schemaVersion: 2,
         databaseSchema: WORKER_DATABASE_SCHEMA,
         quarantineBucket: 'sto-info-quarantine',
         quarantineEndpoint: 'https://account.r2.cloudflarestorage.com',
@@ -51,6 +51,8 @@ describe('readWorkerSettings', () => {
         heartbeatMs: 30_000,
         maxAttempts: 3,
         maxDefinitionAgeMs: 48 * 60 * 60 * 1000,
+        healthPollMs: 30_000,
+        unhealthyRetryMs: 60_000,
         clamdHost: '127.0.0.1',
         clamdPort: 3310,
       });
@@ -74,6 +76,8 @@ describe('readWorkerSettings', () => {
           SCAN_HEARTBEAT_MS: '5000',
           SCAN_MAX_ATTEMPTS: '7',
           CLAMAV_MAX_DEFINITION_AGE_HOURS: '12',
+          CLAMAV_HEALTH_POLL_MS: '15000',
+          SCAN_UNHEALTHY_RETRY_MS: '120000',
           CLAMAV_HOST: 'clamd.internal',
           CLAMAV_PORT: '3311',
         }),
@@ -88,6 +92,8 @@ describe('readWorkerSettings', () => {
           heartbeatMs: 5_000,
           maxAttempts: 7,
           maxDefinitionAgeMs: 12 * 60 * 60 * 1000,
+          healthPollMs: 15_000,
+          unhealthyRetryMs: 120_000,
           clamdHost: 'clamd.internal',
           clamdPort: 3311,
         }),
@@ -163,8 +169,8 @@ describe('readWorkerSettings', () => {
       // ADR-0006 decision 3. Refused here, at startup, rather than one
       // message at a time with files already queued.
       expect(() =>
-        readWorkerSettings(environment({ FILE_SCAN_SCHEMA_VERSION: '2' })),
-      ).toThrow('does not support: 2');
+        readWorkerSettings(environment({ FILE_SCAN_SCHEMA_VERSION: '1' })),
+      ).toThrow('does not support: 1');
     });
 
     it.each([
@@ -172,6 +178,16 @@ describe('readWorkerSettings', () => {
       ['above the ceiling', { SCAN_CONCURRENCY: '64' }, 'SCAN_CONCURRENCY'],
       ['not a number', { SCAN_MAX_ATTEMPTS: 'three' }, 'SCAN_MAX_ATTEMPTS'],
       ['fractional', { CLAMAV_PORT: '3310.5' }, 'CLAMAV_PORT'],
+      [
+        'polling faster than a second',
+        { CLAMAV_HEALTH_POLL_MS: '999' },
+        'CLAMAV_HEALTH_POLL_MS',
+      ],
+      [
+        'deferring a job for longer than an hour',
+        { SCAN_UNHEALTHY_RETRY_MS: '3600001' },
+        'SCAN_UNHEALTHY_RETRY_MS',
+      ],
     ])('refuses a value %s', (_description, changes, variable) => {
       let caught: WorkerSettingsError | undefined;
 

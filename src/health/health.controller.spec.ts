@@ -4,137 +4,119 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { WorkerSettings } from '../config/worker-settings';
 import {
-  ScanEngine,
-  ScanEngineDescription,
-} from '../scanning/scan-engine.interface';
+  EngineHealth,
+  EngineHealthService,
+} from '../scanning/engine-health.service';
+import { ScanEngineDescription } from '../scanning/scan-engine.interface';
 import { HealthController } from './health.controller';
 
-const SETTINGS = {
-  schemaVersion: 1,
-  maxDefinitionAgeMs: 48 * 60 * 60 * 1000,
-} as WorkerSettings;
+const SETTINGS = { schemaVersion: 2 } as WorkerSettings;
 
-const FRESH: ScanEngineDescription = {
+const CHECKED_AT = new Date('2026-09-20T09:00:00.000Z');
+
+const DESCRIPTION: ScanEngineDescription = {
   engine: 'clamav',
   engineVersion: '1.4.2',
   signatureVersion: '27412',
   definitionEpoch: '27412',
-  definitionsBuiltAt: new Date(Date.now() - 60_000),
+  definitionsBuiltAt: new Date('2026-09-20T08:00:00.000Z'),
+};
+
+const FIT: EngineHealth = {
+  healthy: true,
+  reason: null,
+  description: DESCRIPTION,
+  checkedAt: CHECKED_AT,
 };
 
 describe('HealthController', () => {
-  let describeEngine: jest.Mock;
+  let current: jest.Mock<() => EngineHealth>;
   let controller: HealthController;
 
   beforeEach(() => {
-    describeEngine = jest.fn(() => Promise.resolve(FRESH));
+    current = jest.fn(() => FIT);
 
     controller = new HealthController(
-      { describe: describeEngine } as unknown as ScanEngine,
+      { current } as unknown as EngineHealthService,
       SETTINGS,
     );
   });
 
   describe('liveness', () => {
-    it('answers without asking the scanner anything', () => {
+    it('answers without asking about the scanner at all', () => {
       // Two probes, two questions. Liveness must answer even when the
       // scanner is down, or an orchestrator would restart a process whose
       // only problem is that clamd has not finished loading.
-      expect(controller.getHealth()).toEqual({ ok: true, schemaVersion: 1 });
-      expect(describeEngine).not.toHaveBeenCalled();
+      expect(controller.getHealth()).toEqual({ ok: true, schemaVersion: 2 });
+      expect(current).not.toHaveBeenCalled();
     });
   });
 
   describe('readiness', () => {
-    it('reports the scanner it found', async () => {
-      await expect(controller.getReadiness()).resolves.toEqual({
+    it('reports the scanner the health poll found', () => {
+      expect(controller.getReadiness()).toEqual({
         ok: true,
-        schemaVersion: 1,
+        schemaVersion: 2,
         engine: 'clamav',
         engineVersion: '1.4.2',
         signatureVersion: '27412',
+        checkedAt: '2026-09-20T09:00:00.000Z',
       });
     });
 
-    it('fails while the scanner cannot be reached', async () => {
-      describeEngine.mockImplementationOnce(() =>
-        Promise.reject(new Error('ECONNREFUSED')),
-      );
+    it('never opens a connection of its own', () => {
+      // The probe reads what the poll established rather than asking again.
+      // Anything that can reach this port could otherwise make the worker
+      // talk to clamd as often as it liked, and the answer it returned
+      // might not be the one the pipeline was acting on.
+      controller.getReadiness();
 
-      await expect(controller.getReadiness()).rejects.toBeInstanceOf(
+      expect(current).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['the scanner cannot be reached', 'The scanner cannot be reached'],
+      [
+        'no signature database is loaded',
+        'The scanner did not say how old its signatures are',
+      ],
+      [
+        'the signatures are older than the policy allows',
+        'The signature database is older than the policy allows',
+      ],
+    ])('fails while %s', (_description, reason) => {
+      current.mockReturnValue({
+        healthy: false,
+        reason,
+        description: null,
+        checkedAt: CHECKED_AT,
+      });
+
+      expect(() => controller.getReadiness()).toThrow(reason);
+    });
+
+    it('fails before the scanner has been asked even once', () => {
+      current.mockReturnValue({
+        healthy: false,
+        reason: 'The scanner has not been asked yet',
+        description: null,
+        checkedAt: new Date(0),
+      });
+
+      expect(() => controller.getReadiness()).toThrow(
         ServiceUnavailableException,
       );
     });
 
-    it('fails while no signature database is loaded', async () => {
-      // ADR-0005 put this among FC-003's criteria. Silence about the age of
-      // the signatures is not evidence that they are young.
-      describeEngine.mockImplementationOnce(() =>
-        Promise.resolve({ ...FRESH, definitionsBuiltAt: null }),
+    it('fails rather than report a fitness it cannot describe', () => {
+      // Belt and braces: healthy with no description is a state the health
+      // service does not produce, and reporting `engine: undefined` would
+      // be worse than refusing.
+      current.mockReturnValue({ ...FIT, description: null });
+
+      expect(() => controller.getReadiness()).toThrow(
+        'The scanner cannot be trusted',
       );
-
-      await expect(controller.getReadiness()).rejects.toThrow(
-        'did not say how old its signatures are',
-      );
-    });
-
-    it('fails while the signatures are older than the policy allows', async () => {
-      describeEngine.mockImplementationOnce(() =>
-        Promise.resolve({
-          ...FRESH,
-          definitionsBuiltAt: new Date(Date.now() - 72 * 60 * 60 * 1000),
-        }),
-      );
-
-      await expect(controller.getReadiness()).rejects.toThrow(
-        'older than the policy allows',
-      );
-    });
-
-    it('accepts signatures right on the limit', async () => {
-      // The clock is frozen so that the two readings of it — the one that
-      // builds the fixture and the one inside the probe — are the same
-      // instant. Without that this asserts nothing about the boundary,
-      // only about how long the assignment above took.
-      jest.useFakeTimers({ now: new Date('2026-09-19T12:00:00.000Z') });
-
-      try {
-        describeEngine.mockImplementationOnce(() =>
-          Promise.resolve({
-            ...FRESH,
-            definitionsBuiltAt: new Date(
-              Date.now() - SETTINGS.maxDefinitionAgeMs,
-            ),
-          }),
-        );
-
-        await expect(controller.getReadiness()).resolves.toEqual(
-          expect.objectContaining({ ok: true }),
-        );
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    it('refuses signatures one millisecond past it', async () => {
-      jest.useFakeTimers({ now: new Date('2026-09-19T12:00:00.000Z') });
-
-      try {
-        describeEngine.mockImplementationOnce(() =>
-          Promise.resolve({
-            ...FRESH,
-            definitionsBuiltAt: new Date(
-              Date.now() - SETTINGS.maxDefinitionAgeMs - 1,
-            ),
-          }),
-        );
-
-        await expect(controller.getReadiness()).rejects.toThrow(
-          'older than the policy allows',
-        );
-      } finally {
-        jest.useRealTimers();
-      }
     });
   });
 });

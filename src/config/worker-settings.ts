@@ -50,6 +50,10 @@ export interface WorkerSettings {
   readonly maxAttempts: number;
   /** How old a signature database may be and still be trusted. */
   readonly maxDefinitionAgeMs: number;
+  /** How often the scanner is asked whether it is fit to judge a file. */
+  readonly healthPollMs: number;
+  /** How long a job waits when it arrives at an unfit scanner. */
+  readonly unhealthyRetryMs: number;
   /** Where `clamd` is listening. */
   readonly clamdHost: string;
   /** Which port `clamd` is listening on. */
@@ -258,6 +262,20 @@ export function readWorkerSettings(
       60 *
       60 *
       1000,
+    healthPollMs: readNumber(
+      environment,
+      'CLAMAV_HEALTH_POLL_MS',
+      30_000,
+      1_000,
+      600_000,
+    ),
+    unhealthyRetryMs: readNumber(
+      environment,
+      'SCAN_UNHEALTHY_RETRY_MS',
+      60_000,
+      1_000,
+      3_600_000,
+    ),
     clamdHost: environment.CLAMAV_HOST?.trim() || '127.0.0.1',
     clamdPort: readNumber(environment, 'CLAMAV_PORT', 3310, 1, 65_535),
   };

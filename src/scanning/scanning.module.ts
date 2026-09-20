@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { ClamdScanEngineService } from './clamd-scan-engine.service';
 import { CLAMD_SOCKET_FACTORY, createClamdSocket } from './clamd-socket';
+import { EngineHealthService } from './engine-health.service';
 import { SCAN_ENGINE } from './scan-engine.interface';
 
 /**
@@ -17,7 +18,8 @@ import { SCAN_ENGINE } from './scan-engine.interface';
   providers: [
     { provide: CLAMD_SOCKET_FACTORY, useValue: createClamdSocket },
     { provide: SCAN_ENGINE, useClass: ClamdScanEngineService },
+    EngineHealthService,
   ],
-  exports: [SCAN_ENGINE],
+  exports: [SCAN_ENGINE, EngineHealthService],
 })
 export class ScanningModule {}
