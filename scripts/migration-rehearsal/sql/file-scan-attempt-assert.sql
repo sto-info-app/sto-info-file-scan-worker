@@ -204,11 +204,16 @@ SELECT pg_temp.expect_rejected(
 
 -- ADR-0015's main new risk, closed. Until FC-010 the two tables were
 -- unrelated and nothing enforced the relationship at all.
+-- 23001, not 23503. PostgreSQL 18 reports a blocked ON DELETE RESTRICT as
+-- restrict_violation rather than foreign_key_violation; an orphan INSERT, and
+-- a delete blocked by ON DELETE NO ACTION, both still raise 23503. Nothing in
+-- either repository catches either code, so this is a change to what the
+-- rehearsal expects and not to what the applications do.
 SELECT pg_temp.expect_rejected(
   'deleting an asset that an attempt still points at',
   $$DELETE FROM "sto_info_app"."file_asset"
     WHERE "id" = '4f1a0e2c-8b3d-4a59-9c21-6f7e5d4c3b2a'$$,
-  '23503');
+  '23001');
 
 SELECT pg_temp.expect_accepted(
   'deleting an asset nothing points at',

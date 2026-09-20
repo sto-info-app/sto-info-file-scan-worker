@@ -34,7 +34,7 @@ set -euo pipefail
 MIGRATION="${1:-src/database/migrations/1792400000000-CreateFileScanAttempt.ts}"
 SUITE="${2:-file-scan-attempt}"
 
-PG_IMAGE="${REHEARSAL_PG_IMAGE:-postgres:17-alpine}"
+PG_IMAGE="${REHEARSAL_PG_IMAGE:-postgres:18-alpine}"
 CONTAINER="worker-migration-rehearsal-$$"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
