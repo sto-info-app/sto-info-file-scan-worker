@@ -20,10 +20,12 @@ interface Signature {
 /**
  * What the worker can recognise from a file's first bytes.
  *
- * Deliberately short. This list exists to report what arrived, not to decide
- * whether it is allowed: the request message carries no expected type, and
- * the worker has no way of knowing what the feature that accepted the upload
- * was expecting. Deciding is FC-012's, against the registry's own record.
+ * Deliberately short. It exists to answer two questions and no others: what
+ * arrived, and whether what arrived is the kind of thing the upload claimed
+ * it was. The second is new in contract version 2, which carries the
+ * declared type — ADR-0020 — and it is answered with this table rather than
+ * with a library because the set of things this site accepts is four types
+ * long.
  *
  * It replaces the `file-type` package, which the worker depended on and
  * could never have used: that package is ESM-only with no CommonJS entry
@@ -32,10 +34,13 @@ interface Signature {
  * substitute for a maintained library in general, and a better one here,
  * where the whole requirement is to write down what the first bytes said.
  *
- * It also replaces the printable-ratio and NUL-byte heuristics the old CSV
- * validation carried. Those were part of deciding whether a roster export
- * was well formed, which ADR-0001 places at the backend's ingress and FC-009
- * built there.
+ * A NUL-byte and control-byte test sits beside it, and it is worth being
+ * clear about what that is and is not. The old CSV validation carried a
+ * printable-ratio heuristic as part of deciding whether a roster export was
+ * *well formed*; that belongs to the backend's ingress, where ADR-0001 puts
+ * it and where FC-009 built it. This one decides only whether bytes are
+ * plausibly text at all, which is the only way a declared `text/csv` can be
+ * confirmed by anything the worker can see.
  */
 const SIGNATURES: readonly Signature[] = [
   { contentType: 'image/png', offset: 0, marker: [0x89, 0x50, 0x4e, 0x47] },
@@ -66,20 +71,111 @@ const SIGNATURES: readonly Signature[] = [
   },
 ];
 
+/** The prefix of any media type that is carried as text. */
+const TEXT_TYPE_PREFIX = 'text/';
+
+/** What a file's first bytes turned out to be evidence of. */
+interface ByteEvidence {
+  /** The container recognised, or null when none was. */
+  readonly signature: string | null;
+  /** Whether the bytes are plausibly text. */
+  readonly looksLikeText: boolean;
+}
+
 /**
- * Says what a file's first bytes look like.
+ * Reads whatever the first bytes are evidence of.
+ *
+ * Both questions are answered, and neither overrides the other, because the
+ * two collide in a way that would otherwise be decided wrongly. `BM` and
+ * `MZ` are printable letters: a roster CSV whose first cell begins with
+ * either matches a binary signature while being perfectly good text. Keeping
+ * the findings separate lets the caller use whichever one its question needs
+ * — a declared `text/csv` is answered by the text test, and a declared
+ * `image/bmp` by the signature — instead of forcing one label to serve both.
+ *
+ * @param prefix - The leading bytes, however many arrived.
+ * @returns What they are evidence of.
+ */
+function examine(prefix: Buffer): ByteEvidence {
+  const signature =
+    SIGNATURES.find(candidate => matches(prefix, candidate))?.contentType ??
+    null;
+
+  return { signature, looksLikeText: looksLikeText(prefix) };
+}
+
+/**
+ * Reports whether bytes are plausibly text.
+ *
+ * A NUL byte or a control byte that no text file uses is taken as proof that
+ * they are not. Bytes above 0x7f are allowed, because a roster export is
+ * UTF-8 and carries names that need it, and a byte-order mark is three of
+ * them. An empty prefix is not text: nothing was read, so nothing was shown.
+ *
+ * @param prefix - The leading bytes.
+ * @returns True when nothing in them contradicts text.
+ */
+function looksLikeText(prefix: Buffer): boolean {
+  if (prefix.length === 0) {
+    return false;
+  }
+
+  return prefix.every(
+    byte => byte >= 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d,
+  );
+}
+
+/**
+ * Says what a file's first bytes look like, for the record.
+ *
+ * What is recorded, not what is decided — `declarationHolds` does the
+ * deciding. A file recognised as a container is reported as that container,
+ * unless it also reads as text, in which case the text is the better
+ * description: the three signatures whose markers are printable letters
+ * (`BM`, `MZ`, `GIF8`) would otherwise label an ordinary CSV as a bitmap.
  *
  * @param prefix - The leading bytes, however many arrived.
  * @returns The media type, or null when nothing recognised it.
  */
 export function sniffContentType(prefix: Buffer): string | null {
-  for (const signature of SIGNATURES) {
-    if (matches(prefix, signature)) {
-      return signature.contentType;
-    }
+  const evidence = examine(prefix);
+
+  return evidence.looksLikeText ? 'text/plain' : evidence.signature;
+}
+
+/**
+ * Reports whether the bytes support what the upload claimed they were.
+ *
+ * The rule is strict for anything that is not text and permissive about what
+ * kind of text something is. A declared container must be the container its
+ * signature says it is, so a PNG declared as a JPEG is refused and so is an
+ * executable declared as an image. A declared `text/*` is confirmed by the
+ * text test alone, because the difference between a CSV and a plain text
+ * file is not in the bytes and the backend's ingress is what decides whether
+ * a roster export is well formed.
+ *
+ * Silence is refusal, not permission. A declared type this table cannot
+ * confirm — a container with no signature here, or bytes that are neither a
+ * known container nor text — does not hold. The backend normalises what a
+ * browser sends into the small set this can answer for, so the types that
+ * reach here are types it knows; anything else is either a new upload path
+ * that has not been thought about or a claim worth refusing.
+ *
+ * @param declaredContentType - What the upload claimed, already normalised.
+ * @param prefix - The leading bytes, however many arrived.
+ * @returns True when the bytes bear the claim out.
+ */
+export function declarationHolds(
+  declaredContentType: string,
+  prefix: Buffer,
+): boolean {
+  const evidence = examine(prefix);
+
+  if (declaredContentType.startsWith(TEXT_TYPE_PREFIX)) {
+    return evidence.looksLikeText;
   }
 
-  return null;
+  return evidence.signature === declaredContentType;
 }
 
 /**
