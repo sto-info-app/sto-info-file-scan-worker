@@ -7,8 +7,14 @@ absence of that ability is the design rather than a restriction on it.
 
 ## What happens to one job
 
-1. **Ask the scanner what it is.** Before anything is written, because the
-   signature database's identity is part of the attempt's idempotency key.
+1. **Read what the scanner is.** From the health poll rather than by asking
+   `clamd` again: the signature database's identity is part of the attempt's
+   idempotency key, so it has to be known before anything is written. **If
+   the scanner is not fit to judge a file — unreachable, silent about the
+   age of its signatures, or holding signatures older than the policy allows
+   — the job is refused here, before an attempt exists.** It is moved to
+   BullMQ's delayed set and tried again later, so an outage of ours costs the
+   asset nothing. ADR-0020.
 2. **Claim the attempt.** One `INSERT ... ON CONFLICT DO UPDATE` either
    creates it or takes over one whose lease has lapsed. A finished attempt is
    a duplicate delivery and its verdict is repeated unchanged; a live lease
@@ -19,7 +25,11 @@ absence of that ability is the design rather than a restriction on it.
    limit, and straight into `clamd` over `INSTREAM`. Nothing touches disk.
    A heartbeat extends the lease while this runs.
 5. **Decide.** The hash is checked against what the registry recorded, and it
-   is checked even when the scanner said the bytes were clean.
+   is checked even when the scanner said the bytes were clean. So is the
+   declared type: a would-be-clean object whose bytes are not the kind of
+   thing the upload claimed is refused as `CONTENT_TYPE_MISMATCH`. A
+   detection is reported as a detection, because an infected file that is
+   also misdescribed is more usefully reported as infected.
 6. **Complete**, as a compare-and-set against the lease token. If that
    matches nothing, another worker owns the question and this one says
    nothing at all.
@@ -52,7 +62,7 @@ cannot keep. A rule about crashes has to hold by construction.
 | `ScanningModule` | The scanner, behind `SCAN_ENGINE`. Nothing about the database. |
 | `QuarantineModule` | Read-only access to one bucket. Nothing about scanning. |
 | `ScanModule` | The pipeline, the attempt record and the two queues. |
-| `HealthModule` | The probes. Depends on the scanner, because that is the question readiness asks. |
+| `HealthModule` | The probes. They report what the health poll last established and never open a connection of their own. |
 | `SharedModule` | AWS Secrets Manager. |
 | `DatabaseModule` | Puts the session in UTC. |
 
@@ -77,6 +87,54 @@ turns silence into a pass.
 
 The escalation ADR-0005 names — moving `clamd` out into its own Render
 private service — changes the socket factory and nothing else.
+
+## Knowing whether the scanner is fit
+
+`EngineHealthService` asks `describe()` on a timer
+(`CLAMAV_HEALTH_POLL_MS`, default thirty seconds) and everything else reads
+the answer rather than asking for one. Three things follow, and
+[ADR-0020](../../../Plans/Fleets/ADR/0020-scanner-health-and-declared-types.md)
+records why each is worth having.
+
+**The queue pauses while the scanner is unfit.** The processor is told when
+the answer changes and pauses or resumes its BullMQ worker to match, so
+during a `freshclam` outage jobs wait in the queue instead of failing in it.
+A job already in hand runs to its end, which is right: it has a scanner that
+was fit when it started.
+
+**A job that slips through the gap costs the asset nothing.** The pipeline
+checks fitness before it claims anything, throws, and the processor moves the
+job to the delayed set. Before this, a stale database was recorded as a
+failed attempt — three deliveries during an outage and a perfectly good
+upload was rejected for good, by us.
+
+**The probe and the pipeline agree.** `/health/ready` reports the same answer
+the pipeline is acting on. A probe that opened its own connection would also
+be a way for anything that can reach the port to make the worker talk to
+`clamd` as often as it liked.
+
+Render's background workers are not probed, so in the deployment it is the
+pause that enforces readiness; the endpoint is for a human and for local use.
+
+## What the bytes are allowed to be
+
+Contract version 2 carries `declaredContentType`: what the upload claimed,
+normalised by the backend into one spelling. The worker checks it against
+what the first bytes look like, and the rule has two halves.
+
+**A declared container must be the container its signature says it is.** A
+PNG declared as a JPEG is refused, and so is an executable declared as an
+image.
+
+**A declared `text/*` is confirmed by a text test** — no NUL bytes, no
+control bytes — because the difference between a CSV and a plain text file
+is not in the bytes, and whether a roster export is *well formed* is decided
+at the backend's ingress where ADR-0001 puts it.
+
+Silence is refusal rather than permission: a declared type the ten-signature
+table cannot confirm does not hold. That is workable only because the
+backend reduces what a browser sends into the small set this can answer for
+— `application/vnd.ms-excel` becomes `text/csv` before it is ever stored.
 
 ## Recoverable restart
 

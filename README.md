@@ -17,6 +17,12 @@ code path that could reach that decision — ADR-0015.
   `INSTREAM` without touching disk.
 - **ClamAV, failing closed**: a timeout, an unparseable reply or a stale
   signature database all mean *not clean* — never a pass.
+- **It knows when it cannot scan**: the scanner's health is polled, and a
+  worker whose `clamd` is unreachable or whose signatures are too old pauses
+  its own queue rather than spending anybody's retries on it.
+- **The bytes must be what the upload said they were**: a declared type
+  travels with the request and is checked against the first bytes, so an
+  executable declared as an image is refused even when the scanner is happy.
 - **Leased attempts**: a lost lease writes nothing, so a stale worker cannot
   overwrite the answer of the one that replaced it.
 - **A versioned, asset-only contract**: no URL, no credentials, no rows of
@@ -123,6 +129,40 @@ npm run verify     # audit, lint, format check, coverage and build
 
 Coverage is enforced at 100%. See
 [docs/github/QUALITY-AUTOMATION.md](docs/github/QUALITY-AUTOMATION.md).
+
+### Rehearsals
+
+Two things this repository does cannot be proved by a unit spec, because
+both are questions about somebody else's software. Each has a rehearsal
+that starts a throwaway container, proves it, and removes the container
+afterwards. Neither is part of the suite: they need Docker, they are slow,
+and they must not dilute the coverage the suite enforces.
+
+```sh
+npm run rehearse:migration   # the schema, against a real PostgreSQL
+npm run rehearse:scan        # the clamd client, against a real clamd
+```
+
+`rehearse:scan` builds its scanner on the public ClamAV image by default.
+Point it at this repository's own image to rehearse the exact container
+that gets deployed:
+
+```sh
+docker build -t stoi-file-scan-worker .
+REHEARSAL_CLAMAV_IMAGE=stoi-file-scan-worker npm run rehearse:scan
+```
+
+### Building the container
+
+```sh
+docker build -t stoi-file-scan-worker .
+```
+
+The build downloads ClamAV's signature database and bakes it in, so it
+takes a few minutes and produces an image of about 1 GB. That is the
+trade: a container that can scan seven seconds after it starts, rather
+than one that is useless until `freshclam` has finished. See
+[docs/infrastructure.md](docs/infrastructure.md).
 
 ## Contributing
 

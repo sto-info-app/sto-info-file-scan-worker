@@ -104,12 +104,21 @@ ephemeral services, held by construction rather than by a cleanup path.
 ## Magic bytes
 
 The first sixty-four bytes of each object are matched against a short table
-of container signatures, and the result is recorded on the attempt row. It is
-**reported and never enforced**: the request carries no expected type, so the
-worker cannot know what the feature that accepted the upload was expecting.
-Recognising a Windows executable where a profile picture was promised is the
-backend's conclusion to draw, against its own record of what the asset is
-for, and that is FC-012.
+of container signatures and a test for whether the bytes are text at all.
+The result is recorded on the attempt row, and since contract version 2 it
+is also **enforced against what the upload claimed** — ADR-0020.
+
+A declared container must be the container its signature says it is, so a
+Windows executable declared as a profile picture is refused as
+`CONTENT_TYPE_MISMATCH` even when the scanner found nothing in it. A
+declared `text/*` is confirmed by the text test alone, because the
+difference between a CSV and a plain text file is not in the bytes and
+whether a roster export is well formed is settled at the backend's ingress.
+
+A type the table cannot confirm does not hold. That is only workable
+because the backend reduces what a browser sends into the small set this
+can answer for before it is ever stored, which is why the normalisation
+lives there and not here.
 
 This replaces the `file-type` package, which this repository depended on and
 could never have used — it is ESM-only with no CommonJS entry point, and this

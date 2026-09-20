@@ -53,8 +53,11 @@ schema match these entities. The worker refuses to start when it is set.
 - `REDIS_URL`
 - `QUEUE_PREFIX`: default `bull:sto-info:`
 - `FILE_SCAN_SCHEMA_VERSION`: the contract version this process speaks.
-  Default 1. It must be one the build supports, or the worker refuses to
-  start — ADR-0006 decision 3.
+  Default 2. It must be one the build supports, or the worker refuses to
+  start — ADR-0006 decision 3. **Version 1 is no longer supported**: it
+  carried no declared content type, so a version 1 message would be bytes
+  with nothing to check them against (ADR-0020). Nothing has ever been
+  deployed, so there are no version 1 messages anywhere to strand.
 
 The queue names are fixed by the contract and are deliberately not
 configurable. A name that differed between the two repositories would look
@@ -107,10 +110,26 @@ both at startup.
 - `CLAMAV_HOST`: default `127.0.0.1`
 - `CLAMAV_PORT`: default `3310`
 - `CLAMAV_MAX_DEFINITION_AGE_HOURS`: default 48
+- `CLAMAV_HEALTH_POLL_MS`: default 30000
+- `SCAN_UNHEALTHY_RETRY_MS`: default 60000
 
 Signatures older than the maximum age never produce a clean verdict, and the
 readiness probe fails while they are — ADR-0005 decision 4. A scanner that
 will not say how old its signatures are counts as too old.
+
+`CLAMAV_HEALTH_POLL_MS` is how often the scanner is asked about itself.
+Everything else reads that answer rather than asking again, so this is also
+how long it can take the worker to notice that `clamd` has come back — and,
+within the definition-age policy, how stale the recorded signature version
+on an attempt can be. Shortening it costs one `VERSION` conversation each
+time; there is no per-scan cost either way.
+
+`SCAN_UNHEALTHY_RETRY_MS` is how long a job waits when it reaches a worker
+whose scanner is unfit. The queue is normally paused in that state, so this
+covers the job that was already in hand when the answer changed: it is moved
+to BullMQ's delayed set rather than failed, because five failures during an
+outage that ends on its own would empty the queue into the failed set —
+ADR-0020.
 
 `CLAMAV_MODE` and `CLAMAV_PATH` are gone: the worker speaks to `clamd` over
 its socket rather than running a binary.

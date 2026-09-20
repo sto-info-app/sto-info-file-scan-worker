@@ -40,14 +40,24 @@ interface ScanRequestMessage {
   objectKey: string;
   objectVersion: string | null;
   expectedSha256: string;
+  declaredContentType: string;
   policyVersion: number;
   campaignId: string | null;
   traceId: string;
 }
 ```
 
-Worth reading as a list of absences. **No URL, no bucket, no endpoint, no
-credentials, no filename and no row of anybody's data.** The worker resolves
+`declaredContentType` arrived in version 2 (ADR-0020). It is what the
+upload claimed the bytes were, reduced by the backend to one lowercase,
+parameter-free spelling, and the worker checks it against what the first
+bytes look like. It is a claim to be tested, never an instruction — nothing
+in the worker does anything differently because of what it says, beyond
+refusing an object whose bytes contradict it. There is no null: an asset
+nobody declared a type for cannot have the check applied, so the backend
+refuses to queue one.
+
+The rest is worth reading as a list of absences. **No URL, no bucket, no
+endpoint, no credentials, no filename and no row of anybody's data.** The worker resolves
 where to read from out of its own configuration, which is why there is no
 SSRF surface to defend rather than a defence against one — ADR-0006 decision
 4, and the first acceptance criterion of FC-010.
