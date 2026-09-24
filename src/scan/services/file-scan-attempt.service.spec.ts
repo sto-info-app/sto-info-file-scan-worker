@@ -83,7 +83,13 @@ describe('FileScanAttemptService', () => {
   let service: FileScanAttemptService;
 
   beforeEach(() => {
-    query = jest.fn(() => Promise.resolve([]));
+    // Shaped as TypeORM's PostgreSQL driver shapes it: an UPDATE answers
+    // `[rows, rowCount]`, anything else answers the rows. A mock that gave
+    // an UPDATE bare rows is what let every compare-and-set here read as
+    // lost against a real database while passing here.
+    query = jest.fn((statement: unknown) =>
+      Promise.resolve(updated(statement as string) ? [[], 0] : []),
+    );
     findOne = jest.fn(() => Promise.resolve(null));
 
     service = new FileScanAttemptService(
@@ -91,6 +97,16 @@ describe('FileScanAttemptService', () => {
       SETTINGS,
     );
   });
+
+  /**
+   * Whether a statement is an UPDATE, which the driver answers differently.
+   *
+   * @param statement - The SQL.
+   * @returns True for an UPDATE.
+   */
+  function updated(statement: string): boolean {
+    return statement.trimStart().startsWith('UPDATE');
+  }
 
   /**
    * The SQL of the nth statement the service ran.
@@ -235,7 +251,7 @@ describe('FileScanAttemptService', () => {
 
       findOne.mockImplementationOnce(() => Promise.resolve(spent));
       query.mockImplementationOnce(() => Promise.resolve([]));
-      query.mockImplementationOnce(() => Promise.resolve([refused]));
+      query.mockImplementationOnce(() => Promise.resolve([[refused], 1]));
 
       await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
         kind: 'EXHAUSTED',
@@ -260,7 +276,7 @@ describe('FileScanAttemptService', () => {
 
   describe('marking an attempt as scanning', () => {
     it('reports success when this worker still holds it', async () => {
-      query.mockImplementationOnce(() => Promise.resolve([{ id: 'x' }]));
+      query.mockImplementationOnce(() => Promise.resolve([[{ id: 'x' }], 1]));
 
       await expect(service.markScanning('attempt-1', 'token')).resolves.toBe(
         true,
@@ -278,7 +294,7 @@ describe('FileScanAttemptService', () => {
 
   describe('holding the lease', () => {
     it('extends it while this worker still owns it', async () => {
-      query.mockImplementationOnce(() => Promise.resolve([{ id: 'x' }]));
+      query.mockImplementationOnce(() => Promise.resolve([[{ id: 'x' }], 1]));
 
       await expect(service.heartbeat('attempt-1', 'token')).resolves.toBe(true);
       expect(parameters()).toEqual(['attempt-1', 'token', '300000']);
@@ -316,7 +332,7 @@ describe('FileScanAttemptService', () => {
         state: FileScanAttemptState.CLEAN,
         completedAt: new Date(),
       });
-      query.mockImplementationOnce(() => Promise.resolve([finished]));
+      query.mockImplementationOnce(() => Promise.resolve([[finished], 1]));
 
       await expect(
         service.complete('attempt-1', 'token', completion),
@@ -327,7 +343,7 @@ describe('FileScanAttemptService', () => {
     });
 
     it('only writes when the lease token still matches', async () => {
-      query.mockImplementationOnce(() => Promise.resolve([attempt()]));
+      query.mockImplementationOnce(() => Promise.resolve([[attempt()], 1]));
 
       await service.complete('attempt-1', 'token', completion);
 

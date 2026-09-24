@@ -181,7 +181,7 @@ export class FileScanAttemptService {
    * @returns True when this worker still held the attempt.
    */
   async markScanning(attemptId: string, leaseToken: string): Promise<boolean> {
-    const updated = await this._repository.query(
+    const updated = await this.updateReturning(
       `UPDATE ${TABLE}
        SET "state" = 'SCANNING', "startedAt" = now(), "heartbeatAt" = now()
        WHERE "id" = $1 AND "leaseToken" = $2 AND "state" = 'CLAIMED'
@@ -200,7 +200,7 @@ export class FileScanAttemptService {
    * @returns True when the lease was extended.
    */
   async heartbeat(attemptId: string, leaseToken: string): Promise<boolean> {
-    const updated = await this._repository.query(
+    const updated = await this.updateReturning(
       `UPDATE ${TABLE}
        SET "heartbeatAt" = now(),
            "leaseExpiresAt" = now() + ($3 || ' milliseconds')::interval
@@ -234,7 +234,7 @@ export class FileScanAttemptService {
     leaseToken: string,
     completion: AttemptCompletion,
   ): Promise<FileScanAttemptEntity | null> {
-    const updated = await this._repository.query(
+    const updated = await this.updateReturning(
       `UPDATE ${TABLE}
        SET "state" = $3,
            "observedSha256" = $4,
@@ -271,7 +271,7 @@ export class FileScanAttemptService {
       return null;
     }
 
-    return updated[0] as FileScanAttemptEntity;
+    return updated[0];
   }
 
   /**
@@ -388,7 +388,7 @@ export class FileScanAttemptService {
   private async refuseExhausted(
     existing: FileScanAttemptEntity,
   ): Promise<ClaimOutcome> {
-    const refused = await this._repository.query(
+    const refused = await this.updateReturning(
       `UPDATE ${TABLE}
        SET "state" = 'REJECTED',
            "rejectionCode" = 'RETRY_BUDGET_EXHAUSTED',
@@ -410,6 +410,31 @@ export class FileScanAttemptService {
       `[refuseExhausted] Retry budget spent - AttemptId: ${existing.id}`,
     );
 
-    return { kind: 'EXHAUSTED', attempt: refused[0] as FileScanAttemptEntity };
+    return { kind: 'EXHAUSTED', attempt: refused[0] };
+  }
+
+  /**
+   * Runs an `UPDATE ... RETURNING` and gives back the rows it returned.
+   *
+   * TypeORM's PostgreSQL driver answers an `UPDATE` with `[rows, rowCount]`,
+   * not with the rows as it does for an `INSERT` or a `SELECT`. Read as rows,
+   * that pair always has a length of two, so every compare-and-set here
+   * looked lost: `markScanning` said the lease had gone, and the attempt was
+   * left `SCANNING` with nothing said to the backend.
+   *
+   * @param statement - The statement, which must be an `UPDATE`.
+   * @param parameters - Its parameters.
+   * @returns The rows the statement returned.
+   */
+  private async updateReturning(
+    statement: string,
+    parameters: unknown[],
+  ): Promise<FileScanAttemptEntity[]> {
+    const [rows] = (await this._repository.query(statement, parameters)) as [
+      FileScanAttemptEntity[],
+      number,
+    ];
+
+    return rows;
   }
 }
