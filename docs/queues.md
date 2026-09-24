@@ -146,7 +146,7 @@ whose request never arrived.
 
 | Option | Value | Why |
 | --- | --- | --- |
-| `jobId` (request) | `<assetId>:<policyVersion>` | Two requests for the same asset under the same policy collapse; a policy change is a new question. |
+| `jobId` (request) | `<assetId>_<policyVersion>` | Two requests for the same asset under the same policy collapse; a policy change is a new question. An underscore because BullMQ refuses a custom identifier containing a colon. |
 | `jobId` (verdict) | the attempt's identifier | BullMQ collapses a verdict offered twice. A convenience, not the guarantee. |
 | `attempts` | 5 | With exponential backoff from one second. |
 | `removeOnComplete` | true | Redis is not the audit trail; PostgreSQL is. |
