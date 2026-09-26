@@ -26,6 +26,7 @@
     "prepare": "husky",
     "rehearse:scan": "bash scripts/scan-rehearsal/run-rehearsal.sh",
     "rehearse:migration": "bash scripts/migration-rehearsal/run-rehearsal.sh src/database/migrations/1792400000000-CreateFileScanAttempt.ts file-scan-attempt",
+    "rehearse:migration:scan-usage": "bash scripts/migration-rehearsal/run-rehearsal.sh src/database/migrations/1792400000000-CreateFileScanAttempt.ts,src/database/migrations/1794800000000-RecordScanUsage.ts scan-usage",
     "start": "cross-env TZ=UTC node dist/src/main",
     "start:debug": "cross-env TZ=UTC nest start --debug --watch",
     "start:dev": "cross-env TZ=UTC nest start --watch",

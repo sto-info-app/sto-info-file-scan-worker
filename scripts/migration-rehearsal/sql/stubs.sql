@@ -9,3 +9,7 @@ CREATE SCHEMA "sto_info_app";
 CREATE TABLE "sto_info_app"."file_asset" (
   "id" uuid NOT NULL DEFAULT gen_random_uuid(),
   CONSTRAINT "PK_file_asset" PRIMARY KEY ("id"));
+
+-- The role the backend connects as. A migration that grants the backend a view
+-- names it through BACKEND_DB_ROLE, which the harness sets to this.
+CREATE ROLE "rehearsal_backend" NOLOGIN;

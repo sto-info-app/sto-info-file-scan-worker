@@ -27,12 +27,24 @@
 # is removed on exit, including on failure or interrupt.
 #
 # Usage:
-#   bash scripts/migration-rehearsal/run-rehearsal.sh [<migration.ts>] [<name>]
+#   bash scripts/migration-rehearsal/run-rehearsal.sh [<migration.ts>[,<migration.ts>...]] [<name>]
+#
+# Several migrations, separated by commas, are applied in order. The last one
+# is the subject: only it is rolled back and re-applied, and the ones before it
+# are the schema it was written against. A suite with its own
+# `<name>-after-down.sql` checks the rollback itself; otherwise the rollback
+# must leave `sto_info_worker` empty.
 #
 set -euo pipefail
 
-MIGRATION="${1:-src/database/migrations/1792400000000-CreateFileScanAttempt.ts}"
+MIGRATIONS="${1:-src/database/migrations/1792400000000-CreateFileScanAttempt.ts}"
 SUITE="${2:-file-scan-attempt}"
+IFS=',' read -r -a MIGRATION_LIST <<<"${MIGRATIONS}"
+LAST=$((${#MIGRATION_LIST[@]} - 1))
+
+# A migration that grants to the backend reads its role from here. The stub
+# creates the role, and nothing outside the container is involved.
+export BACKEND_DB_ROLE=rehearsal_backend
 
 PG_IMAGE="${REHEARSAL_PG_IMAGE:-postgres:18-alpine}"
 CONTAINER="worker-migration-rehearsal-$$"
@@ -42,6 +54,7 @@ WORK="$(mktemp -d)"
 
 SEED="${HERE}/sql/${SUITE}-seed.sql"
 ASSERT="${HERE}/sql/${SUITE}-assert.sql"
+AFTER_DOWN="${HERE}/sql/${SUITE}-after-down.sql"
 RACE="${HERE}/race-${SUITE}.sh"
 
 cleanup() {
@@ -64,7 +77,7 @@ psql_value() {
     psql -qtA -U postgres -d rehearsal -c "$1"
 }
 
-for file in "${MIGRATION}" "${SEED}" "${ASSERT}"; do
+for file in "${MIGRATION_LIST[@]}" "${SEED}" "${ASSERT}"; do
   if [ ! -f "${REPO}/${file}" ] && [ ! -f "${file}" ]; then
     echo "Not found: ${file}" >&2
     exit 1
@@ -78,10 +91,12 @@ fi
 
 cd "${REPO}"
 
-step "Emitting SQL from ${MIGRATION}"
-npx ts-node -r tsconfig-paths/register \
-  "${HERE}/emit-migration-sql.ts" "${MIGRATION}" \
-  "${WORK}/up.sql" "${WORK}/down.sql"
+for index in "${!MIGRATION_LIST[@]}"; do
+  step "Emitting SQL from ${MIGRATION_LIST[${index}]}"
+  npx ts-node -r tsconfig-paths/register \
+    "${HERE}/emit-migration-sql.ts" "${MIGRATION_LIST[${index}]}" \
+    "${WORK}/up-${index}.sql" "${WORK}/down-${index}.sql"
+done
 
 step "Starting ${PG_IMAGE}"
 docker run -d --name "${CONTAINER}" \
@@ -104,8 +119,10 @@ done
 step 'Applying the backend stub the foreign key needs'
 psql_file "${HERE}/sql/stubs.sql"
 
-step 'Applying the migration (up)'
-psql_file "${WORK}/up.sql"
+for index in "${!MIGRATION_LIST[@]}"; do
+  step "Applying ${MIGRATION_LIST[${index}]} (up)"
+  psql_file "${WORK}/up-${index}.sql"
+done
 
 step 'Seeding'
 psql_file "${SEED}"
@@ -120,8 +137,19 @@ fi
 
 # Rolling back an empty schema proves very little. This rolls back over the
 # rows the assertions left behind, which is the case that actually goes wrong.
-step 'Rolling back (down) with data present'
-psql_file "${WORK}/down.sql"
+step "Rolling back ${MIGRATION_LIST[${LAST}]} (down) with data present"
+psql_file "${WORK}/down-${LAST}.sql"
+
+if [ -f "${AFTER_DOWN}" ]; then
+  step 'Asserting what the rollback left'
+  psql_file "${AFTER_DOWN}"
+
+  step 'Re-applying the migration to the same database'
+  psql_file "${WORK}/up-${LAST}.sql"
+
+  printf '\nREHEARSAL PASSED: up -> assert -> down (with data) -> up, on %s\n' "${PG_IMAGE}"
+  exit 0
+fi
 
 remaining="$(psql_value "SELECT count(*) FROM information_schema.tables WHERE table_schema='sto_info_worker'")"
 types="$(psql_value "SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='sto_info_worker' AND t.typtype='e'")"
@@ -146,6 +174,6 @@ fi
 echo "PASS: rollback emptied sto_info_worker and left sto_info_app alone"
 
 step 'Re-applying the migration to the same database'
-psql_file "${WORK}/up.sql"
+psql_file "${WORK}/up-${LAST}.sql"
 
 printf '\nREHEARSAL PASSED: up -> assert -> down (with data) -> up, on %s\n' "${PG_IMAGE}"
