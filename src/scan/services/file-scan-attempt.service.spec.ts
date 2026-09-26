@@ -255,23 +255,28 @@ describe('FileScanAttemptService', () => {
       });
     });
 
-    it('says nothing when another worker holds a live lease', async () => {
+    it('says when another worker’s live lease lapses', async () => {
+      // So that the job can be put back until then. Finishing it instead
+      // would leave nothing to deliver it again if the holder has crashed.
+      const leaseExpiresAt = new Date('2026-09-26T10:05:00.000Z');
       findOne.mockImplementationOnce(() =>
-        Promise.resolve(attempt({ attemptCount: 1 })),
+        Promise.resolve(attempt({ attemptCount: 1, leaseExpiresAt })),
       );
 
       await expect(
         service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
       ).resolves.toEqual({
         kind: 'BUSY',
+        leaseExpiresAt,
       });
     });
 
-    it('says nothing when the row vanished between the two statements', async () => {
+    it('has no lease to report when the row vanished between the two statements', async () => {
       await expect(
         service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
       ).resolves.toEqual({
         kind: 'BUSY',
+        leaseExpiresAt: null,
       });
     });
 
@@ -300,14 +305,16 @@ describe('FileScanAttemptService', () => {
     it('leaves an exhausted attempt alone while somebody is holding it', async () => {
       // The budget is there to stop attempts accumulating, not to interrupt
       // the one that is about to answer.
+      const leaseExpiresAt = new Date('2026-09-26T10:05:00.000Z');
       findOne.mockImplementationOnce(() =>
-        Promise.resolve(attempt({ attemptCount: 3 })),
+        Promise.resolve(attempt({ attemptCount: 3, leaseExpiresAt })),
       );
 
       await expect(
         service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
       ).resolves.toEqual({
         kind: 'BUSY',
+        leaseExpiresAt,
       });
       expect(sql(1)).toContain('"leaseExpiresAt" < now()');
     });

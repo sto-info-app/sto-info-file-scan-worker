@@ -12,9 +12,13 @@ import {
   EngineHealthService,
   EngineUnfitError,
 } from '../../scanning/engine-health.service';
+import { AttemptHeldError } from '../attempt-held.error';
 import { FileScanService } from '../services/file-scan.service';
 import { ScanVerdictPublisherService } from '../services/scan-verdict-publisher.service';
-import { FileScanProcessor } from './file-scan.processor';
+import {
+  FileScanProcessor,
+  LEASE_LAPSE_MARGIN_MS,
+} from './file-scan.processor';
 
 const FIXTURE = JSON.parse(
   readFileSync(
@@ -228,6 +232,77 @@ describe('FileScanProcessor', () => {
       ).rejects.toBeInstanceOf(DelayedError);
 
       expect(publish).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an attempt another worker holds', () => {
+    it('puts the job back until a little after the lease lapses', async () => {
+      // A worker that crashed mid-scan still holds a live lease, and BullMQ
+      // hands its job on long before the lease lapses. Finishing the job
+      // here would mean nothing ever delivered it again.
+      const moveToDelayed = deferral();
+      scan.mockImplementationOnce(() =>
+        Promise.reject(new AttemptHeldError(new Date(300_000))),
+      );
+      jest.spyOn(Date, 'now').mockReturnValue(1_000);
+
+      try {
+        await expect(
+          processor.process(job(FIXTURE.request, moveToDelayed), 'token-1'),
+        ).rejects.toBeInstanceOf(DelayedError);
+
+        expect(moveToDelayed).toHaveBeenCalledWith(
+          300_000 + LEASE_LAPSE_MARGIN_MS,
+          'token-1',
+        );
+        expect(publish).not.toHaveBeenCalled();
+      } finally {
+        jest.restoreAllMocks();
+      }
+    });
+
+    it('does not put the job back into the past', async () => {
+      // A lease that has lapsed already, or could not be read, is tried again
+      // shortly rather than at once or at a moment that has gone.
+      const moveToDelayed = deferral();
+      scan.mockImplementationOnce(() =>
+        Promise.reject(new AttemptHeldError(null)),
+      );
+      jest.spyOn(Date, 'now').mockReturnValue(1_000);
+
+      try {
+        await expect(
+          processor.process(job(FIXTURE.request, moveToDelayed), 'token-1'),
+        ).rejects.toBeInstanceOf(DelayedError);
+
+        expect(moveToDelayed).toHaveBeenCalledWith(
+          1_000 + LEASE_LAPSE_MARGIN_MS,
+          'token-1',
+        );
+      } finally {
+        jest.restoreAllMocks();
+      }
+    });
+
+    it('waits from now when the lease had already lapsed', async () => {
+      const moveToDelayed = deferral();
+      scan.mockImplementationOnce(() =>
+        Promise.reject(new AttemptHeldError(new Date(500))),
+      );
+      jest.spyOn(Date, 'now').mockReturnValue(1_000);
+
+      try {
+        await expect(
+          processor.process(job(FIXTURE.request, moveToDelayed), 'token-1'),
+        ).rejects.toBeInstanceOf(DelayedError);
+
+        expect(moveToDelayed).toHaveBeenCalledWith(
+          1_000 + LEASE_LAPSE_MARGIN_MS,
+          'token-1',
+        );
+      } finally {
+        jest.restoreAllMocks();
+      }
     });
   });
 

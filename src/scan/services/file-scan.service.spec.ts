@@ -19,6 +19,7 @@ import {
   ScanEngineDescription,
   ScanEngineResult,
 } from '../../scanning/scan-engine.interface';
+import { AttemptHeldError } from '../attempt-held.error';
 import { FileScanAttemptEntity } from '../entities/file-scan-attempt.entity';
 import { FileScanAttemptState } from '../enums/file-scan-attempt-state.enum';
 import {
@@ -796,12 +797,21 @@ describe('FileScanService', () => {
       expect(attempts.complete).not.toHaveBeenCalled();
     });
 
-    it('says nothing when another worker holds the attempt', async () => {
+    it('hands the job back when another worker holds the attempt', async () => {
+      // A job finished here would never be delivered again, so a worker that
+      // crashed holding the attempt would leave the upload unscanned.
+      const leaseExpiresAt = new Date('2026-09-26T10:05:00.000Z');
       attempts.claim.mockImplementationOnce(() =>
-        Promise.resolve({ kind: 'BUSY' }),
+        Promise.resolve({ kind: 'BUSY', leaseExpiresAt }),
       );
 
-      await expect(service.scan(request(), REQUESTED_AT)).resolves.toBeNull();
+      const scanning = service.scan(request(), REQUESTED_AT);
+
+      await expect(scanning).rejects.toBeInstanceOf(AttemptHeldError);
+      await expect(scanning).rejects.toEqual(
+        expect.objectContaining({ leaseExpiresAt }),
+      );
+      expect(engine.scan).not.toHaveBeenCalled();
     });
 
     it('answers with the refusal when the retry budget has gone', async () => {

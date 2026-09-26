@@ -27,6 +27,7 @@ import {
   ScanEngine,
   ScanEngineDescription,
 } from '../../scanning/scan-engine.interface';
+import { AttemptHeldError } from '../attempt-held.error';
 import { FileScanAttemptEntity } from '../entities/file-scan-attempt.entity';
 import { FileScanAttemptState } from '../enums/file-scan-attempt-state.enum';
 import { buildVerdictMessage } from '../verdict-from-attempt';
@@ -111,6 +112,8 @@ export class FileScanService {
    * @returns The verdict to send, or null when there is nothing to say.
    * @throws Error when the scanner cannot be reached at all, so that the
    *   message is redelivered rather than answered.
+   * @throws AttemptHeldError when another worker holds the attempt, so that
+   *   the job is put back until its lease lapses.
    */
   async scan(
     request: ScanRequestMessage,
@@ -136,7 +139,7 @@ export class FileScanService {
           `[scan] Another worker holds this attempt - AssetId: ${request.assetId}`,
         );
 
-        return null;
+        throw new AttemptHeldError(claim.leaseExpiresAt);
 
       case 'DUPLICATE':
         this._logger.log(

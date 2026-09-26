@@ -40,10 +40,11 @@ export type ClaimOutcome =
   /**
    * Another worker holds a live lease.
    *
-   * Nothing is written and nothing is said. The holder will answer, or its
-   * lease will lapse and this message will be redelivered.
+   * Nothing is written and nothing is said. The job is put back until the
+   * lease lapses: by then the holder has answered, or it has gone and the
+   * attempt can be taken over. Nothing else would deliver the job again.
    */
-  | { readonly kind: 'BUSY' }
+  | { readonly kind: 'BUSY'; readonly leaseExpiresAt: Date | null }
   /**
    * The attempt has been claimed as often as it is allowed to be.
    *
@@ -371,7 +372,7 @@ export class FileScanAttemptService {
       // The row was there when the insert conflicted and is not there now.
       // Only a delete between the two statements produces this, and the
       // honest answer is that somebody else is in the middle of something.
-      return { kind: 'BUSY' };
+      return { kind: 'BUSY', leaseExpiresAt: null };
     }
 
     if (existing.completedAt !== null) {
@@ -379,7 +380,7 @@ export class FileScanAttemptService {
     }
 
     if (existing.attemptCount < this._settings.maxAttempts) {
-      return { kind: 'BUSY' };
+      return { kind: 'BUSY', leaseExpiresAt: existing.leaseExpiresAt };
     }
 
     return this.refuseExhausted(existing);
@@ -414,7 +415,7 @@ export class FileScanAttemptService {
     );
 
     if (refused.length === 0) {
-      return { kind: 'BUSY' };
+      return { kind: 'BUSY', leaseExpiresAt: existing.leaseExpiresAt };
     }
 
     this._logger.warn(

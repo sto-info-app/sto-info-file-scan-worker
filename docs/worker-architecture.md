@@ -17,8 +17,12 @@ absence of that ability is the design rather than a restriction on it.
    asset nothing. ADR-0020.
 2. **Claim the attempt.** One `INSERT ... ON CONFLICT DO UPDATE` either
    creates it or takes over one whose lease has lapsed. A finished attempt is
-   a duplicate delivery and its verdict is repeated unchanged; a live lease
-   means another worker has it and this one says nothing.
+   a duplicate delivery and its verdict is repeated unchanged. **A live
+   lease means another worker has it, and the job is put back in the
+   delayed set until a little after that lease lapses** rather than
+   finished. By then the holder has answered, and the next delivery repeats
+   its verdict, or it has gone, and the next delivery takes the attempt
+   over.
 3. **Mark it scanning**, if this worker still holds the lease.
 4. **Stream the object.** Out of quarantine, through a transform that hashes
    it, counts it, keeps its first sixty-four bytes and stops at the size
@@ -148,6 +152,15 @@ as the lease lapses — `SCAN_LEASE_MS`, five minutes by default. The state the
 row is left in is whatever the last holder reached, which is the truth about
 how far it got.
 
+**Reclaiming depends on the job coming back after the lease lapses, and
+BullMQ alone would not bring it back.** It hands a crashed worker's job on
+within its own lock duration, about thirty seconds, while the lease still
+has minutes to run. The worker that receives it finds a live lease. Until
+FC-003 it finished the job there and said nothing, and nothing ever
+delivered it again: the upload waited in `SCANNING` until the backend's
+nightly sweep abandoned it. Now the job is put back until the lease lapses,
+and a restart during a scan costs the upload that wait and nothing else.
+
 **Nothing unscanned is published by a restart**, because nothing in this
 repository can publish anything at all.
 
@@ -169,3 +182,4 @@ like any other, and the backend's officer-canary sweep treats it as one.
 | An infection, an unreadable payload, a hash mismatch, an oversize or missing object | `REJECTED`, final. |
 | The retry budget spent | `REJECTED` with `RETRY_BUDGET_EXHAUSTED`, so the backend hears a final answer rather than leaving an upload in limbo. |
 | The lease lost | Nothing is said. Another worker owns the question. |
+| Another worker holds a live lease | The job is put back until a little after it lapses, then either repeats the holder's verdict or takes the attempt over. |

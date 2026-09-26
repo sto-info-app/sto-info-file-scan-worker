@@ -14,8 +14,18 @@ import {
   EngineHealthService,
   EngineUnfitError,
 } from '../../scanning/engine-health.service';
+import { AttemptHeldError } from '../attempt-held.error';
 import { FileScanService } from '../services/file-scan.service';
 import { ScanVerdictPublisherService } from '../services/scan-verdict-publisher.service';
+
+/**
+ * How long after another worker's lease lapses to try its job again.
+ *
+ * The lease is judged by the database's clock and the delay by this
+ * process's, so the job waits a little longer than the lease to be sure it
+ * finds it lapsed.
+ */
+export const LEASE_LAPSE_MARGIN_MS = 5_000;
 
 /**
  * Takes scan requests off the queue.
@@ -135,6 +145,14 @@ export class FileScanProcessor
         throw await this.deferUntilTheScannerIsFit(job, token, error.message);
       }
 
+      if (error instanceof AttemptHeldError) {
+        throw await this.deferUntilTheLeaseLapses(
+          job,
+          token,
+          error.leaseExpiresAt,
+        );
+      }
+
       throw error;
     }
 
@@ -171,6 +189,42 @@ export class FileScanProcessor
       Date.now() + this._settings.unhealthyRetryMs,
       token,
     );
+
+    return new DelayedError();
+  }
+
+  /**
+   * Puts a job back until another worker's lease on its attempt lapses.
+   *
+   * A little after the lapse, because the lease is judged by the database's
+   * clock and the delay by this one. If the holder is still working then,
+   * it will have renewed its lease and the job comes back here again; if it
+   * has answered, the next delivery repeats the verdict; if it has gone, the
+   * next delivery takes the attempt over. That last case is a crash
+   * mid-scan, and it is the one this exists for: finishing the job instead
+   * would leave nothing to deliver it again.
+   *
+   * @param job - The job.
+   * @param token - The lock this worker holds it by.
+   * @param leaseExpiresAt - When the holder's lease lapses, or null when it
+   *   could not be read.
+   * @returns The error the caller must throw.
+   */
+  private async deferUntilTheLeaseLapses(
+    job: Job<unknown>,
+    token: string | undefined,
+    leaseExpiresAt: Date | null,
+  ): Promise<DelayedError> {
+    const now = Date.now();
+    const until =
+      Math.max(now, leaseExpiresAt?.getTime() ?? now) + LEASE_LAPSE_MARGIN_MS;
+
+    this._logger.log(
+      `[deferUntilTheLeaseLapses] Job deferred - JobId: ${job.id}, ` +
+        `Until: ${new Date(until).toISOString()}`,
+    );
+
+    await job.moveToDelayed(until, token);
 
     return new DelayedError();
   }
