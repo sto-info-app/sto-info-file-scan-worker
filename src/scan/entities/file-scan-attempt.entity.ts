@@ -162,6 +162,15 @@ export class FileScanAttemptEntity {
   @Column({ type: 'varchar', length: 100, nullable: true, default: null })
   signatureVersion: string | null;
 
+  /**
+   * When its signature database was built, or null when it did not say.
+   *
+   * What "how old were the signatures" is answered from on the admin
+   * diagnostics page.
+   */
+  @Column({ type: 'timestamptz', nullable: true, default: null })
+  definitionsBuiltAt: Date | null;
+
   /** How many times this attempt has been claimed. */
   @Column({ type: 'int', nullable: false, default: 0 })
   attemptCount: number;
@@ -182,6 +191,16 @@ export class FileScanAttemptEntity {
   /** When the holder last said it was still working. */
   @Column({ type: 'timestamptz', nullable: true, default: null })
   heartbeatAt: Date | null;
+
+  /**
+   * When the backend queued the request, taken from the job itself.
+   *
+   * Null on attempts made before it was recorded. The wait the diagnostics
+   * page reports runs from here, because `createdAt` is only when a worker
+   * picked the job up.
+   */
+  @Column({ type: 'timestamptz', nullable: true, default: null })
+  requestedAt: Date | null;
 
   /** When the scanner was handed the bytes. */
   @Column({ type: 'timestamptz', nullable: true, default: null })

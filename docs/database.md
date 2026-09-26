@@ -66,6 +66,7 @@ absence rather than as a rule.
 | `expectedSha256` | What the registry recorded when the bytes were stored. |
 | `policyVersion`, `definitionEpoch` | Which policy and which signatures. |
 | `campaignId`, `traceId` | Which rescan, and which upload to follow it by. |
+| `requestedAt` | When the backend queued the request, from the job's own timestamp. Null on attempts made before FC-003 recorded it. |
 
 All of these are write-once. `TR_file_scan_attempt_guard` refuses a change to
 any of them at any point in the attempt's life, because they are the
@@ -80,6 +81,7 @@ question, not the answer.
 | `byteSize`, `detectedContentType` | What was read, and what it looked like. |
 | `rejectionCode`, `failureReason` | Why it refused. **Administrator-only.** |
 | `engine`, `engineVersion`, `signatureVersion` | Which scanner answered. |
+| `definitionsBuiltAt` | When its signature database was built, as `clamd` reported it, or null when it did not say. |
 
 A finished attempt is evidence, and the same trigger refuses every change to
 a terminal row. The one exception is `verdictPublishedAt`, which may be set
@@ -99,6 +101,31 @@ that stalls long enough for its lock to expire, then wakes and writes, would
 otherwise overwrite the answer of the worker that replaced it. Every
 completion is therefore a compare-and-set against `leaseToken`, and a stale
 worker updates no rows and says nothing.
+
+## What the backend may read: `scan_usage` and `scan_engine_status`
+
+The backend has no `SELECT` on `file_scan_attempt`, which holds asset
+identifiers, object keys and hashes. Its admin diagnostics page (FC-003)
+reads two views instead, which carry only totals:
+
+- **`scan_usage`** has one row for each window, `24h`, `7d` and `30d`, over
+  the attempts a worker took within it. It gives initial scans and re-scans,
+  retried scans and retries, each outcome and rejection code, attempts in
+  progress, and the median, 95th percentile and maximum of scan time and
+  wait.
+- **`scan_engine_status`** has one row: the engine, versions and signature
+  build time the latest attempt reported.
+
+| Term | Meaning |
+| --- | --- |
+| Re-scan | An attempt that belongs to a campaign, or any attempt for an asset that already had one. |
+| Retry | A claim beyond the first; an attempt claimed three times holds two. |
+| Scan time | From the scanner getting the bytes to the answer. |
+| Wait | From the request being queued (`requestedAt`) to the answer. |
+
+The views are the contract, so the table can change underneath them. They
+are granted to the role named by `BACKEND_DB_ROLE` when the migration runs,
+and the migration refuses to run without it.
 
 ### Constraints worth knowing about
 
@@ -123,6 +150,11 @@ The foreign key crosses into the backend's schema, so **the backend's
 migrations must run before this repository's**. The worker's role also needs
 `REFERENCES` on `sto_info_app.file_asset` and `USAGE` on that schema, and
 nothing else there: it does not read the registry and must not write it.
+
+The other way round, `1794800000000-RecordScanUsage` grants the backend's
+role `USAGE` on `sto_info_worker` and `SELECT` on the two usage views, and
+nothing else. It reads the role from `BACKEND_DB_ROLE`, so that variable must
+be set wherever the worker's migrations run.
 
 This is an ordering the worker cannot check for itself, and the failure is
 loud — the migration will not apply — rather than quiet.
@@ -151,6 +183,16 @@ tries to break every rule it claims to enforce — forty-two assertions,
 including a ten-writer race on the claim statement and a second race on the
 reclaim path. It reads no database environment variable, so a stray `.env`
 cannot point it at anything real, and the container is removed on exit.
+
+```bash
+npm run rehearse:migration:scan-usage
+```
+
+This applies both migrations in order and rehearses the second. It seeds
+seven attempts across the three windows and checks every figure the usage
+view gives against values worked out by hand. It also reads the views as the
+backend's role and proves that role cannot read the table. Finally it rolls
+back over the data, checks the guard trigger is restored, and re-applies.
 
 ## Timezone
 

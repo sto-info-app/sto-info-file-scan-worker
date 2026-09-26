@@ -72,6 +72,8 @@ export interface AttemptCompletion {
   readonly engineVersion: string | null;
   /** The signature database's version, as it reported it. */
   readonly signatureVersion: string | null;
+  /** When the signature database was built, as it reported it. */
+  readonly definitionsBuiltAt: Date | null;
 }
 
 /**
@@ -117,11 +119,13 @@ export class FileScanAttemptService {
    *
    * @param request - The message that asked for the scan.
    * @param description - What the scanner says it is.
+   * @param requestedAt - When the backend queued the request.
    * @returns What the claim found.
    */
   async claim(
     request: ScanRequestMessage,
     description: ScanEngineDescription,
+    requestedAt: Date,
   ): Promise<ClaimOutcome> {
     const leaseToken = randomUUID();
     const claimed = await this._repository.query(
@@ -129,15 +133,18 @@ export class FileScanAttemptService {
          "assetId", "objectKey", "objectVersion", "expectedSha256",
          "policyVersion", "definitionEpoch", "campaignId", "traceId",
          "state", "engine", "engineVersion", "signatureVersion",
+         "definitionsBuiltAt", "requestedAt",
          "attemptCount", "leaseToken", "leaseExpiresAt", "heartbeatAt"
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CLAIMED', $9, $10, $11,
+               $15, $16,
                1, $12, now() + ($13 || ' milliseconds')::interval, now())
        ON CONFLICT ON CONSTRAINT "UQ_file_scan_attempt_idempotency"
        DO UPDATE SET
          "state" = 'CLAIMED',
          "engineVersion" = EXCLUDED."engineVersion",
          "signatureVersion" = EXCLUDED."signatureVersion",
+         "definitionsBuiltAt" = EXCLUDED."definitionsBuiltAt",
          "attemptCount" = ${TABLE}."attemptCount" + 1,
          "leaseToken" = EXCLUDED."leaseToken",
          "leaseExpiresAt" = EXCLUDED."leaseExpiresAt",
@@ -163,6 +170,8 @@ export class FileScanAttemptService {
         leaseToken,
         String(this._settings.leaseMs),
         this._settings.maxAttempts,
+        description.definitionsBuiltAt,
+        requestedAt,
       ],
     );
 
@@ -244,6 +253,7 @@ export class FileScanAttemptService {
            "failureReason" = $8,
            "engineVersion" = $9,
            "signatureVersion" = $10,
+           "definitionsBuiltAt" = $11,
            "completedAt" = now(),
            "leaseToken" = NULL,
            "leaseExpiresAt" = NULL
@@ -260,6 +270,7 @@ export class FileScanAttemptService {
         completion.failureReason,
         completion.engineVersion,
         completion.signatureVersion,
+        completion.definitionsBuiltAt,
       ],
     );
 

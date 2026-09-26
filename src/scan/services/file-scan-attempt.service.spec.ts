@@ -28,6 +28,9 @@ const REQUEST: ScanRequestMessage = {
   traceId: '0b5d4f6a-1c2e-4d3b-8a7f-9e8d7c6b5a40',
 };
 
+/** When the backend queued the request. */
+const REQUESTED_AT = new Date('2026-09-26T10:00:00.000Z');
+
 const DESCRIPTION: ScanEngineDescription = {
   engine: 'clamav',
   engineVersion: '1.4.2',
@@ -64,6 +67,8 @@ function attempt(
     engine: 'clamav',
     engineVersion: '1.4.2',
     signatureVersion: '27412',
+    definitionsBuiltAt: new Date('2026-09-18T09:15:22.000Z'),
+    requestedAt: REQUESTED_AT,
     attemptCount: 1,
     leaseToken: 'e3b0c442-98fc-4c14-9afb-f4c8996fb924',
     leaseExpiresAt: new Date(),
@@ -133,7 +138,9 @@ describe('FileScanAttemptService', () => {
       const row = attempt();
       query.mockImplementationOnce(() => Promise.resolve([row]));
 
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'CLAIMED',
         attempt: row,
       });
@@ -144,7 +151,7 @@ describe('FileScanAttemptService', () => {
       // for two workers to both decide they had won.
       query.mockImplementationOnce(() => Promise.resolve([attempt()]));
 
-      await service.claim(REQUEST, DESCRIPTION);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
 
       expect(sql()).toContain('INSERT INTO');
       expect(sql()).toContain(
@@ -154,10 +161,28 @@ describe('FileScanAttemptService', () => {
       expect(query).toHaveBeenCalledTimes(1);
     });
 
+    it('records when the request was queued and when the signatures were built', async () => {
+      // The wait the diagnostics page reports starts at the request, not at
+      // the moment a worker happened to pick the job up.
+      query.mockImplementationOnce(() => Promise.resolve([attempt()]));
+
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
+
+      expect(sql()).toContain('"definitionsBuiltAt", "requestedAt"');
+      expect(sql()).toContain(
+        '"definitionsBuiltAt" = EXCLUDED."definitionsBuiltAt"',
+      );
+      expect(sql()).not.toContain('"requestedAt" = EXCLUDED');
+      expect(parameters().slice(14)).toEqual([
+        DESCRIPTION.definitionsBuiltAt,
+        REQUESTED_AT,
+      ]);
+    });
+
     it('will only take over an attempt whose lease has lapsed', async () => {
       query.mockImplementationOnce(() => Promise.resolve([attempt()]));
 
-      await service.claim(REQUEST, DESCRIPTION);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
 
       expect(sql()).toContain(`"state" IN ('CLAIMED', 'SCANNING')`);
       expect(sql()).toContain('"leaseExpiresAt" IS NULL');
@@ -167,8 +192,8 @@ describe('FileScanAttemptService', () => {
     it('issues a fresh lease token every time', async () => {
       query.mockImplementation(() => Promise.resolve([attempt()]));
 
-      await service.claim(REQUEST, DESCRIPTION);
-      await service.claim(REQUEST, DESCRIPTION);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
 
       expect(parameters(0)[11]).not.toBe(parameters(1)[11]);
     });
@@ -176,7 +201,7 @@ describe('FileScanAttemptService', () => {
     it('keys the attempt on the signature database that answered', async () => {
       query.mockImplementationOnce(() => Promise.resolve([attempt()]));
 
-      await service.claim(REQUEST, DESCRIPTION);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
 
       expect(parameters()[5]).toBe('27412');
     });
@@ -189,7 +214,9 @@ describe('FileScanAttemptService', () => {
 
       findOne.mockImplementationOnce(() => Promise.resolve(finished));
 
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'DUPLICATE',
         attempt: finished,
       });
@@ -200,7 +227,7 @@ describe('FileScanAttemptService', () => {
         Promise.resolve(attempt({ completedAt: new Date() })),
       );
 
-      await service.claim(REQUEST, DESCRIPTION);
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
 
       expect(findOne).toHaveBeenCalledWith({
         where: {
@@ -217,7 +244,11 @@ describe('FileScanAttemptService', () => {
         Promise.resolve(attempt({ completedAt: new Date() })),
       );
 
-      await service.claim({ ...REQUEST, objectVersion: 'v7' }, DESCRIPTION);
+      await service.claim(
+        { ...REQUEST, objectVersion: 'v7' },
+        DESCRIPTION,
+        REQUESTED_AT,
+      );
 
       expect(findOne).toHaveBeenCalledWith({
         where: expect.objectContaining({ objectVersion: 'v7' }),
@@ -229,13 +260,17 @@ describe('FileScanAttemptService', () => {
         Promise.resolve(attempt({ attemptCount: 1 })),
       );
 
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'BUSY',
       });
     });
 
     it('says nothing when the row vanished between the two statements', async () => {
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'BUSY',
       });
     });
@@ -253,7 +288,9 @@ describe('FileScanAttemptService', () => {
       query.mockImplementationOnce(() => Promise.resolve([]));
       query.mockImplementationOnce(() => Promise.resolve([[refused], 1]));
 
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'EXHAUSTED',
         attempt: refused,
       });
@@ -267,7 +304,9 @@ describe('FileScanAttemptService', () => {
         Promise.resolve(attempt({ attemptCount: 3 })),
       );
 
-      await expect(service.claim(REQUEST, DESCRIPTION)).resolves.toEqual({
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({
         kind: 'BUSY',
       });
       expect(sql(1)).toContain('"leaseExpiresAt" < now()');
@@ -325,7 +364,17 @@ describe('FileScanAttemptService', () => {
       failureReason: null,
       engineVersion: '1.4.2',
       signatureVersion: '27412',
+      definitionsBuiltAt: new Date('2026-09-18T09:15:22.000Z'),
     };
+
+    it('records when the signatures it answered with were built', async () => {
+      query.mockImplementationOnce(() => Promise.resolve([[attempt()], 1]));
+
+      await service.complete('attempt-1', 'token', completion);
+
+      expect(sql()).toContain('"definitionsBuiltAt" = $11');
+      expect(parameters()[10]).toEqual(completion.definitionsBuiltAt);
+    });
 
     it('writes the answer and clears the lease in one statement', async () => {
       const finished = attempt({

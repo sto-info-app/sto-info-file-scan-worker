@@ -98,6 +98,10 @@ services:
         sync: false
       - key: DB_USERNAME
         sync: false
+      # The backend's database role. Only the migrations read it, to grant
+      # the backend the scan usage views; `start:render` runs them first.
+      - key: BACKEND_DB_ROLE
+        sync: false
 
       # There is no DB_PASSWORD. The database password and the quarantine
       # keys come from AWS Secrets Manager at start-up, which is why these

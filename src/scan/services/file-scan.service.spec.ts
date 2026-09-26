@@ -94,6 +94,8 @@ function attempt(
     engine: 'clamav',
     engineVersion: '1.4.2',
     signatureVersion: '27412',
+    definitionsBuiltAt: null,
+    requestedAt: null,
     attemptCount: 1,
     leaseToken: LEASE_TOKEN,
     leaseExpiresAt: new Date(),
@@ -106,6 +108,9 @@ function attempt(
     ...changes,
   } as FileScanAttemptEntity;
 }
+
+/** When the backend queued the request. */
+const REQUESTED_AT = new Date('2026-09-26T10:00:00.000Z');
 
 describe('FileScanService', () => {
   let attempts: {
@@ -187,7 +192,7 @@ describe('FileScanService', () => {
 
   describe('a clean object', () => {
     it('finishes the attempt as clean', async () => {
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(completion).toEqual(
         expect.objectContaining({
@@ -200,7 +205,7 @@ describe('FileScanService', () => {
     });
 
     it('answers with a clean verdict carrying the trace it was given', async () => {
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(verdict).toEqual(
         expect.objectContaining({
@@ -223,13 +228,14 @@ describe('FileScanService', () => {
         request({
           expectedSha256: createHash('sha256').update(PNG).digest('hex'),
         }),
+        REQUESTED_AT,
       );
 
       expect(completion?.detectedContentType).toBe('image/png');
     });
 
     it('reads the object the message named and no other', async () => {
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(quarantine.getStream).toHaveBeenCalledWith(
         request().objectKey,
@@ -241,7 +247,7 @@ describe('FileScanService', () => {
       // The signature database's identity is part of the idempotency key,
       // so it has to be known before a row can be written. It comes from
       // the health poll rather than from a conversation of this job's own.
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(health.current.mock.invocationCallOrder[0]).toBeLessThan(
         attempts.claim.mock.invocationCallOrder[0],
@@ -249,13 +255,24 @@ describe('FileScanService', () => {
     });
 
     it('records the signatures that actually judged it', async () => {
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(completion).toEqual(
         expect.objectContaining({
           engineVersion: '1.4.2',
           signatureVersion: '27412',
+          definitionsBuiltAt: description.definitionsBuiltAt,
         }),
+      );
+    });
+
+    it('claims with the time the backend queued the request', async () => {
+      await service.scan(request(), REQUESTED_AT);
+
+      expect(attempts.claim).toHaveBeenCalledWith(
+        request(),
+        description,
+        REQUESTED_AT,
       );
     });
   });
@@ -273,7 +290,7 @@ describe('FileScanService', () => {
         return { outcome, detail: 'Eicar FOUND' } as ScanEngineResult;
       });
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.state).toBe(FileScanAttemptState.REJECTED);
       expect(completion?.rejectionCode).toBe(rejectionCode);
@@ -294,7 +311,7 @@ describe('FileScanService', () => {
         } as ScanEngineResult;
       });
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.failureReason).toContain('EICAR');
       expect(JSON.stringify(verdict)).not.toContain('EICAR');
@@ -311,7 +328,7 @@ describe('FileScanService', () => {
         return { outcome: 'UNAVAILABLE', detail: 'timed out' };
       });
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.state).toBe(FileScanAttemptState.FAILED);
       expect(completion?.rejectionCode).toBeNull();
@@ -327,7 +344,7 @@ describe('FileScanService', () => {
         return { outcome: 'UNAVAILABLE', detail: 'timed out' };
       });
 
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.observedSha256).toBeNull();
     });
@@ -352,9 +369,9 @@ describe('FileScanService', () => {
         checkedAt: new Date(),
       });
 
-      await expect(service.scan(request())).rejects.toBeInstanceOf(
-        EngineUnfitError,
-      );
+      await expect(
+        service.scan(request(), REQUESTED_AT),
+      ).rejects.toBeInstanceOf(EngineUnfitError);
     });
 
     it('claims nothing, so the asset keeps its whole retry budget', async () => {
@@ -368,7 +385,7 @@ describe('FileScanService', () => {
         checkedAt: new Date(),
       });
 
-      await expect(service.scan(request())).rejects.toThrow(
+      await expect(service.scan(request(), REQUESTED_AT)).rejects.toThrow(
         'The scanner cannot be reached',
       );
 
@@ -385,7 +402,7 @@ describe('FileScanService', () => {
         checkedAt: new Date(),
       });
 
-      await expect(service.scan(request())).rejects.toThrow(
+      await expect(service.scan(request(), REQUESTED_AT)).rejects.toThrow(
         'The scanner cannot be trusted',
       );
     });
@@ -394,7 +411,7 @@ describe('FileScanService', () => {
       // One conversation per file, not two. The health poll owns the
       // question now, and asking again here would put a round trip in
       // front of every scan for an answer that changes a few times a day.
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(engine.describe).not.toHaveBeenCalled();
     });
@@ -411,6 +428,7 @@ describe('FileScanService', () => {
           declaredContentType: 'text/csv',
           expectedSha256: createHash('sha256').update(PNG).digest('hex'),
         }),
+        REQUESTED_AT,
       );
 
       expect(completion).toEqual(
@@ -431,6 +449,7 @@ describe('FileScanService', () => {
           declaredContentType: 'text/csv',
           expectedSha256: createHash('sha256').update(PNG).digest('hex'),
         }),
+        REQUESTED_AT,
       );
 
       expect(completion?.failureReason).toBe(
@@ -457,6 +476,7 @@ describe('FileScanService', () => {
           declaredContentType: 'text/csv',
           expectedSha256: createHash('sha256').update(PNG).digest('hex'),
         }),
+        REQUESTED_AT,
       );
 
       expect(completion?.rejectionCode).toBe('INFECTED');
@@ -473,6 +493,7 @@ describe('FileScanService', () => {
           declaredContentType: 'text/csv',
           expectedSha256: createHash('sha256').update(gibberish).digest('hex'),
         }),
+        REQUESTED_AT,
       );
 
       expect(completion?.failureReason).toBe(
@@ -481,7 +502,10 @@ describe('FileScanService', () => {
     });
 
     it('lets a roster export through on the text test alone', async () => {
-      await service.scan(request({ declaredContentType: 'text/csv' }));
+      await service.scan(
+        request({ declaredContentType: 'text/csv' }),
+        REQUESTED_AT,
+      );
 
       expect(completion?.state).toBe(FileScanAttemptState.CLEAN);
     });
@@ -495,6 +519,7 @@ describe('FileScanService', () => {
       // because it looks like one.
       const verdict = await service.scan(
         request({ expectedSha256: 'b'.repeat(64) }),
+        REQUESTED_AT,
       );
 
       expect(engine.scan).toHaveBeenCalled();
@@ -504,7 +529,10 @@ describe('FileScanService', () => {
     });
 
     it('records what it actually found', async () => {
-      await service.scan(request({ expectedSha256: 'b'.repeat(64) }));
+      await service.scan(
+        request({ expectedSha256: 'b'.repeat(64) }),
+        REQUESTED_AT,
+      );
 
       expect(completion?.observedSha256).toBe(CONTENT_SHA);
     });
@@ -516,7 +544,7 @@ describe('FileScanService', () => {
         Promise.reject(new QuarantineObjectMissingError('gone')),
       );
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.rejectionCode).toBe('OBJECT_MISSING');
       expect(verdict?.outcome).toBe('REJECTED');
@@ -527,7 +555,7 @@ describe('FileScanService', () => {
         Promise.resolve(Readable.from([Buffer.alloc(2048)])),
       );
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.rejectionCode).toBe('SIZE_LIMIT_EXCEEDED');
       expect(verdict?.outcome).toBe('REJECTED');
@@ -552,7 +580,7 @@ describe('FileScanService', () => {
         return { outcome: 'CLEAN', detail: null };
       });
 
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.state).toBe(FileScanAttemptState.REJECTED);
       expect(completion?.rejectionCode).toBe('SIZE_LIMIT_EXCEEDED');
@@ -563,7 +591,7 @@ describe('FileScanService', () => {
         Promise.reject(new Error('connection reset')),
       );
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.state).toBe(FileScanAttemptState.FAILED);
       expect(completion?.failureReason).toBe('connection reset');
@@ -573,7 +601,7 @@ describe('FileScanService', () => {
     it('retries when something that is not an error is thrown', async () => {
       quarantine.getStream.mockImplementationOnce(() => Promise.reject('odd'));
 
-      await service.scan(request());
+      await service.scan(request(), REQUESTED_AT);
 
       expect(completion?.failureReason).toBe('Unknown failure');
     });
@@ -597,7 +625,7 @@ describe('FileScanService', () => {
         return { outcome: 'CLEAN', detail: null };
       });
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(verdict?.outcome).toBe('RETRY');
     });
@@ -609,7 +637,7 @@ describe('FileScanService', () => {
         Promise.resolve(false),
       );
 
-      await expect(service.scan(request())).resolves.toBeNull();
+      await expect(service.scan(request(), REQUESTED_AT)).resolves.toBeNull();
       expect(quarantine.getStream).not.toHaveBeenCalled();
     });
 
@@ -619,7 +647,7 @@ describe('FileScanService', () => {
       // harmless rather than a second opinion.
       attempts.complete.mockImplementationOnce(() => Promise.resolve(null));
 
-      await expect(service.scan(request())).resolves.toBeNull();
+      await expect(service.scan(request(), REQUESTED_AT)).resolves.toBeNull();
     });
 
     it('keeps the lease alive while the scan is still running', async () => {
@@ -642,6 +670,7 @@ describe('FileScanService', () => {
 
         const running = service.scan(
           request({ expectedSha256: 'e'.repeat(64) }),
+          REQUESTED_AT,
         );
 
         await Promise.resolve();
@@ -693,7 +722,7 @@ describe('FileScanService', () => {
           return { outcome: 'CLEAN', detail: null };
         });
 
-        const running = service.scan(request());
+        const running = service.scan(request(), REQUESTED_AT);
 
         await Promise.resolve();
         jest.advanceTimersByTime(30_000);
@@ -733,7 +762,7 @@ describe('FileScanService', () => {
           return { outcome: 'CLEAN', detail: null };
         });
 
-        const running = service.scan(request());
+        const running = service.scan(request(), REQUESTED_AT);
 
         await Promise.resolve();
         jest.advanceTimersByTime(30_000);
@@ -760,7 +789,7 @@ describe('FileScanService', () => {
         }),
       );
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(verdict?.outcome).toBe('CLEAN');
       expect(engine.scan).not.toHaveBeenCalled();
@@ -772,7 +801,7 @@ describe('FileScanService', () => {
         Promise.resolve({ kind: 'BUSY' }),
       );
 
-      await expect(service.scan(request())).resolves.toBeNull();
+      await expect(service.scan(request(), REQUESTED_AT)).resolves.toBeNull();
     });
 
     it('answers with the refusal when the retry budget has gone', async () => {
@@ -786,7 +815,7 @@ describe('FileScanService', () => {
         }),
       );
 
-      const verdict = await service.scan(request());
+      const verdict = await service.scan(request(), REQUESTED_AT);
 
       expect(verdict).toEqual(
         expect.objectContaining({
@@ -810,9 +839,9 @@ describe('FileScanService', () => {
         checkedAt: new Date(),
       });
 
-      await expect(service.scan(request())).rejects.toBeInstanceOf(
-        EngineUnfitError,
-      );
+      await expect(
+        service.scan(request(), REQUESTED_AT),
+      ).rejects.toBeInstanceOf(EngineUnfitError);
       expect(attempts.claim).not.toHaveBeenCalled();
     });
   });

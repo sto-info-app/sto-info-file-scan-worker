@@ -107,11 +107,15 @@ export class FileScanService {
    * Handles one scan request.
    *
    * @param request - The message, already checked against the contract.
+   * @param requestedAt - When the backend queued it.
    * @returns The verdict to send, or null when there is nothing to say.
    * @throws Error when the scanner cannot be reached at all, so that the
    *   message is redelivered rather than answered.
    */
-  async scan(request: ScanRequestMessage): Promise<ScanVerdictMessage | null> {
+  async scan(
+    request: ScanRequestMessage,
+    requestedAt: Date,
+  ): Promise<ScanVerdictMessage | null> {
     const health = this._health.current();
 
     if (!health.healthy || health.description === null) {
@@ -124,7 +128,7 @@ export class FileScanService {
     }
 
     const description = health.description;
-    const claim = await this._attempts.claim(request, description);
+    const claim = await this._attempts.claim(request, description, requestedAt);
 
     switch (claim.kind) {
       case 'BUSY':
@@ -174,6 +178,7 @@ export class FileScanService {
       ...conclusion,
       engineVersion: description.engineVersion,
       signatureVersion: description.signatureVersion,
+      definitionsBuiltAt: description.definitionsBuiltAt,
     };
 
     const finished = await this._attempts.complete(

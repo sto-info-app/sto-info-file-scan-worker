@@ -66,6 +66,9 @@ function deferral(): jest.Mock<
   >;
 }
 
+/** When the backend queued every job these tests build. */
+const QUEUED_AT = new Date('2026-09-26T10:00:00.000Z');
+
 /**
  * Builds a job carrying whatever body the test wants.
  *
@@ -79,7 +82,12 @@ function job(
     (timestamp: number, token?: string) => Promise<void>
   > = deferral(),
 ): Job<unknown> {
-  return { id: 'job-1', data, moveToDelayed } as unknown as Job<unknown>;
+  return {
+    id: 'job-1',
+    data,
+    moveToDelayed,
+    timestamp: QUEUED_AT.getTime(),
+  } as unknown as Job<unknown>;
 }
 
 describe('FileScanProcessor', () => {
@@ -147,7 +155,7 @@ describe('FileScanProcessor', () => {
     it('scans it and sends the answer on', async () => {
       await processor.process(job(FIXTURE.request));
 
-      expect(scan).toHaveBeenCalledWith(FIXTURE.request);
+      expect(scan).toHaveBeenCalledWith(FIXTURE.request, QUEUED_AT);
       expect(publish).toHaveBeenCalledWith(VERDICT);
     });
 

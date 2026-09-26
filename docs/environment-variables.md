@@ -44,6 +44,11 @@ The same database as the backend, in a schema of this repository's own.
 - `TYPEORM_LOGGING`: `true` | `false`
 - `TYPEORM_ENTITIES`, `TYPEORM_MIGRATIONS`: globs relative to the built root
 
+- `BACKEND_DB_ROLE`: the database role the **backend** connects as. Read
+  only by the migrations, which grant it `SELECT` on the two scan usage views
+  and nothing else in this schema. A migration run without it refuses. The
+  running worker does not read it.
+
 **There is no `TYPEORM_SYNCHRONIZE`.** Synchronise against a database shared
 with another application will drop that application's columns to make the
 schema match these entities. The worker refuses to start when it is set.

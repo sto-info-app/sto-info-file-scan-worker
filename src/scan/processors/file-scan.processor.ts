@@ -127,7 +127,9 @@ export class FileScanProcessor
     let verdict;
 
     try {
-      verdict = await this._fileScan.scan(request);
+      // The job's own timestamp is when the backend queued it. It survives
+      // redelivery and deferral, so the wait it starts is the uploader's.
+      verdict = await this._fileScan.scan(request, new Date(job.timestamp));
     } catch (error) {
       if (error instanceof EngineUnfitError) {
         throw await this.deferUntilTheScannerIsFit(job, token, error.message);
