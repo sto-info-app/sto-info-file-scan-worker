@@ -15,7 +15,9 @@
  *
  * Run it through `npm run rehearse:scan`, which starts the container for it.
  */
+import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
+import { promisify } from 'node:util';
 
 import { WorkerSettings } from '../../src/config/worker-settings';
 import { ClamdScanEngineService } from '../../src/scanning/clamd-scan-engine.service';
@@ -26,6 +28,17 @@ import { ScanEngineOutcome } from '../../src/scanning/scan-engine.interface';
 /** Where the rehearsal's `clamd` is listening. */
 const HOST = process.env.REHEARSAL_CLAMAV_HOST ?? '127.0.0.1';
 const PORT = Number(process.env.REHEARSAL_CLAMAV_PORT ?? '3390');
+
+/** The container the rehearsal's `clamd` runs in, which it restarts. */
+const CONTAINER = process.env.REHEARSAL_CLAMAV_CONTAINER ?? '';
+
+/** How long to let a scan run before restarting the scanner under it. */
+const RESTART_AFTER_MS = 2_000;
+
+/** How long a restarted scanner may take to load its database again. */
+const RELOAD_LIMIT_MS = 300_000;
+
+const run = promisify(execFile);
 
 /** What `clamd.conf` sets `StreamMaxLength` to, in bytes. */
 const STREAM_MAX_BYTES = 64 * 1024 * 1024;
@@ -129,6 +142,68 @@ function bytes(total: number): Readable {
       this.push(chunk.subarray(0, size));
     },
   });
+}
+
+/**
+ * Streams bytes slowly, so a scan is still in flight when something happens.
+ *
+ * @param total - How many bytes to produce.
+ * @param pauseMs - How long to wait before each chunk.
+ * @returns The stream.
+ */
+function slowBytes(total: number, pauseMs: number): Readable {
+  const chunk = Buffer.alloc(64 * 1024, 0x41);
+  let sent = 0;
+
+  return new Readable({
+    read(): void {
+      if (sent >= total) {
+        this.push(null);
+
+        return;
+      }
+
+      const size = Math.min(chunk.length, total - sent);
+      sent += size;
+      setTimeout(() => this.push(chunk.subarray(0, size)), pauseMs);
+    },
+  });
+}
+
+/**
+ * Waits.
+ *
+ * @param ms - For how long.
+ * @returns When the time is up.
+ */
+function pause(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Waits for the scanner to answer three times in a row, as the runner does
+ * before the rehearsal starts: one answer can come from a daemon that then
+ * stops to finish loading.
+ *
+ * @returns How long it took, in milliseconds.
+ */
+async function waitForTheScanner(): Promise<number> {
+  const started = Date.now();
+  let answered = 0;
+
+  while (answered < 3) {
+    if (Date.now() - started > RELOAD_LIMIT_MS) {
+      throw new Error('The restarted scanner never answered');
+    }
+
+    answered = await engine()
+      .describe()
+      .then(() => answered + 1)
+      .catch(() => 0);
+    await pause(1_000);
+  }
+
+  return Date.now() - started;
 }
 
 /** Asks a real clamd what it is, and checks the client understood it. */
@@ -322,6 +397,67 @@ async function judgesTheScanner(): Promise<void> {
 }
 
 /**
+ * Restarts the scanner while a scan is streaming, and checks the scan is not
+ * clean and the next one is.
+ *
+ * The worker's side of a restart, when the process scanning is the one that
+ * goes, is covered by the attempt lease and the job retry, and the deployed
+ * container's by FC-052. This is the scanner going from under a scan that is
+ * part way through: the socket closes on a client still writing, and the only
+ * acceptable reading of that is "not answered", which the worker retries.
+ */
+async function survivesARestart(): Promise<void> {
+  console.log('\n=== What happens when the scanner restarts mid-scan ===');
+
+  if (CONTAINER === '') {
+    throw new Error(
+      'REHEARSAL_CLAMAV_CONTAINER is not set; run this through npm run rehearse:scan',
+    );
+  }
+
+  // 32 MiB, inside the stream limit, at a pace that takes about ten seconds:
+  // long enough to be certainly in flight when the restart lands, and short
+  // of the deadline, so the deadline cannot be what ends it.
+  const scanning = engine().scan(slowBytes(32 * 1024 * 1024, 20));
+
+  await pause(RESTART_AFTER_MS);
+  // No grace period: a scanner that is killed is the case worth proving, and
+  // one given time to finish might answer before it goes.
+  await run('docker', ['restart', '--time', '0', CONTAINER]);
+
+  const interrupted = await scanning;
+  check(
+    'a scan the scanner restarted under is not clean',
+    interrupted.outcome !== 'CLEAN',
+    `${interrupted.outcome}${interrupted.detail === null ? '' : ` (${interrupted.detail})`}`,
+  );
+  check(
+    'it is reported as not answered, so the worker asks again',
+    interrupted.outcome === 'UNAVAILABLE',
+    interrupted.outcome,
+  );
+
+  const tookMs = await waitForTheScanner();
+  console.log(
+    `  The scanner answered again after ${Math.round(tookMs / 1000)}s`,
+  );
+
+  const after = await engine().scan(Readable.from([CSV]));
+  check(
+    'once it is back, the same export scans clean',
+    after.outcome === 'CLEAN',
+    after.outcome,
+  );
+
+  const detected = await engine().scan(Readable.from([EICAR]));
+  check(
+    'and a detection is still a detection',
+    detected.outcome === 'INFECTED',
+    detected.outcome,
+  );
+}
+
+/**
  * Runs the rehearsal.
  */
 async function main(): Promise<void> {
@@ -331,6 +467,9 @@ async function main(): Promise<void> {
   await reachesTheRightVerdicts();
   await failsClosed();
   await judgesTheScanner();
+  // Last, because it takes the scanner away for as long as it takes to load
+  // its database again.
+  await survivesARestart();
 
   if (failures > 0) {
     console.error(

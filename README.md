@@ -143,6 +143,11 @@ npm run rehearse:migration   # the schema, against a real PostgreSQL
 npm run rehearse:scan        # the clamd client, against a real clamd
 ```
 
+`rehearse:scan` checks clean, EICAR, oversize, refused, timed-out and
+stale-signature scans, and last restarts the scanner while a scan is
+streaming: that scan must come back not answered, never clean, and the
+scanner must judge files correctly once it has loaded its database again.
+
 `rehearse:scan` builds its scanner on the public ClamAV image by default.
 Point it at this repository's own image to rehearse the exact container
 that gets deployed:

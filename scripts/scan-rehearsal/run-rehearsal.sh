@@ -128,6 +128,7 @@ docker exec "${CONTAINER}" sh -c \
 
 step 'Rehearsing'
 REHEARSAL_CLAMAV_HOST=127.0.0.1 REHEARSAL_CLAMAV_PORT="${PORT}" \
+  REHEARSAL_CLAMAV_CONTAINER="${CONTAINER}" \
   npx ts-node -r tsconfig-paths/register "${HERE}/rehearse.ts"
 
 printf '\nSCAN REHEARSAL COMPLETE on %s\n' "${CLAMAV_IMAGE}"
