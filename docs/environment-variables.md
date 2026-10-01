@@ -46,7 +46,7 @@ The same database as the backend, in a schema of this repository's own.
 
 - `BACKEND_DB_ROLE`: the database role the **backend** connects as. Read
   only by the migrations, which grant it `SELECT` on the two scan usage views
-  and nothing else in this schema. A migration run without it refuses. The
+  and the worker heartbeat view, and nothing else in this schema. A migration run without it refuses. The
   running worker does not read it.
 
 **There is no `TYPEORM_SYNCHRONIZE`.** Synchronise against a database shared
@@ -138,6 +138,22 @@ ADR-0020.
 
 `CLAMAV_MODE` and `CLAMAV_PATH` are gone: the worker speaks to `clamd` over
 its socket rather than running a binary.
+
+## Operations
+
+- `WORKER_HEARTBEAT_INTERVAL_MS`: default 30000, between 5000 and 60000.
+  How often each worker process writes its row in
+  `sto_info_worker.worker_heartbeat`. It also writes one as soon as the
+  scanner's health changes, and a last one as it shuts down. The ceiling is
+  a minute because the backend calls a worker silent after two, and one
+  missed beat should not be enough to raise that.
+- `STRANDED_VERDICT_RESEND_INTERVAL_MS`: default 600000 (ten minutes),
+  between 60000 and 86400000. How often verdicts that finished but never
+  reached the queue are sent again. They are also sent once at every start.
+  See `queues.md`.
+
+Not to be confused with `SCAN_HEARTBEAT_MS`, which renews the lease on one
+attempt; this heartbeat is the whole process's.
 
 ## Optional
 

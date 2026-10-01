@@ -1,8 +1,9 @@
 # Database (PostgreSQL)
 
 The worker shares one PostgreSQL database with the backend and owns **one
-schema** inside it: `sto_info_worker`. It owns one table in that schema, and
-it migrates nothing else.
+schema** inside it: `sto_info_worker`. It owns two tables in that schema —
+`file_scan_attempt` and `worker_heartbeat` — and the views over them, and it
+migrates nothing else.
 
 Before FC-010 this document described an `UploadFileEntity` with a `status`
 enum of `pending | passed | failed | virus_detected`, a `mimeType`, a
@@ -87,6 +88,16 @@ A finished attempt is evidence, and the same trigger refuses every change to
 a terminal row. The one exception is `verdictPublishedAt`, which may be set
 once.
 
+Since `1797500000000-ReopenFailedScanAttempt` (FC-042), a `FAILED` row may
+also move in exactly two ways, because a failure was a transient fault and
+not an answer about the file. It may be **reopened** to `CLAIMED` as a fresh
+claim — one more claim, a new lease, and nothing of the old answer left,
+including `verdictPublishedAt` — or **refused** to `REJECTED` with
+`RETRY_BUDGET_EXHAUSTED`, keeping its claims and everything it measured and
+clearing `verdictPublishedAt` so the refusal is sent. The budget is a setting
+the database cannot see, so the service's statements enforce it and the
+trigger enforces the shape. `CLEAN` and `REJECTED` stay final.
+
 ### The lease
 
 | Column | Notes |
@@ -144,6 +155,36 @@ and the migration refuses to run without it.
   the constraint permitted the one row it exists to forbid. **The rehearsal
   found that, not review.**
 
+## `worker_heartbeat` and `worker_heartbeat_status`
+
+One row per running worker process, written by the process itself (FC-042).
+Render never probes a background worker, so a worker that has paused itself
+because its scanner is unfit looks exactly like one with nothing to do; this
+row is how anyone outside the process tells them apart.
+
+| Column | Notes |
+| --- | --- |
+| `workerId` | The process: host name, pid and a random suffix, made at start. Primary key. |
+| `state` | `RUNNING`, `PAUSED` or `STOPPING`. |
+| `pauseReason` | Why it is paused, as a short upper-case code, or null. Only a paused row may have one. |
+| `definitionsVersion`, `definitionsBuiltAt` | The signatures `clamd` last reported, or null while it is not answering. |
+| `jobsInHand` | How many jobs the process is working on. Never negative. |
+| `startedAt` | When the process started, by its own clock. |
+| `beatAt` | When it last wrote the row, by the database's clock. |
+| `pausedSince` | When the current pause began, by the database's clock. Set exactly when `state` is `PAUSED`. |
+
+Each process upserts its row on start, every `WORKER_HEARTBEAT_INTERVAL_MS`,
+whenever the scanner's health changes and once more as `STOPPING` on the way
+out, and deletes any row whose `beatAt` is more than a day old. The pause
+reason codes are listed in [infrastructure.md](infrastructure.md#is-the-worker-paused-idle-or-gone).
+
+**The view is a contract.** The backend's alerts read
+`worker_heartbeat_status` by column name — a heartbeat more than two minutes
+old, or a pause more than ten — so its nine columns are exactly the table's,
+and renaming one is a change to both repositories. It is granted to the role
+named by `BACKEND_DB_ROLE`, and the backend has no `SELECT` on the table
+itself. `USAGE` on the schema is the grant `RecordScanUsage` already made.
+
 ## Deploy ordering
 
 The foreign key crosses into the backend's schema, so **the backend's
@@ -153,7 +194,8 @@ nothing else there: it does not read the registry and must not write it.
 
 The other way round, `1794800000000-RecordScanUsage` grants the backend's
 role `USAGE` on `sto_info_worker` and `SELECT` on the two usage views, and
-nothing else. It reads the role from `BACKEND_DB_ROLE`, so that variable must
+`1797400000000-RecordWorkerHeartbeat` grants it `SELECT` on
+`worker_heartbeat_status`, and nothing else. It reads the role from `BACKEND_DB_ROLE`, so that variable must
 be set wherever the worker's migrations run.
 
 This is an ordering the worker cannot check for itself, and the failure is
@@ -178,11 +220,17 @@ npm run rehearse:migration
 ```
 
 This starts a throwaway `postgres:18-alpine` container, stubs the one backend
-table the foreign key points at, replays the migration, and then deliberately
-tries to break every rule it claims to enforce — forty-two assertions,
+table the foreign key points at, replays every migration in order, and then
+deliberately tries to break every rule the attempt table claims to enforce,
 including a ten-writer race on the claim statement and a second race on the
-reclaim path. It reads no database environment variable, so a stray `.env`
-cannot point it at anything real, and the container is removed on exit.
+reclaim path. The races run the service's own claim statement, read out of
+`FileScanAttemptService` rather than copied — the copy they used to carry had
+fallen behind the service — which is why the whole chain is applied: the
+statement is written against the schema as it is now. It then rolls the
+whole chain back over the data, last migration first, checks that leaves
+`sto_info_worker` empty and `sto_info_app` untouched, and re-applies it. It
+reads no database environment variable, so a stray `.env` cannot point it at
+anything real, and the container is removed on exit.
 
 ```bash
 npm run rehearse:migration:scan-usage
@@ -193,6 +241,34 @@ seven attempts across the three windows and checks every figure the usage
 view gives against values worked out by hand. It also reads the views as the
 backend's role and proves that role cannot read the table. Finally it rolls
 back over the data, checks the guard trigger is restored, and re-applies.
+
+```bash
+npm run rehearse:migration:reopen-failed-attempt
+```
+
+This applies all four migrations and rehearses the reopening guard. It tries
+every wrong way to reopen or refuse a failed attempt, and to reopen a clean or
+rejected one, then runs the attempt service's own claim, refusal and mark
+statements — read out of the service, not copied: a failed attempt under
+budget reopens, scans clean under its new lease, and has the clean answer
+marked sent by its own time and not by the old `RETRY`'s; a stale lease and a
+late request change nothing; a failed attempt with its budget spent is
+refused. Ten workers then claim one failed attempt at once and exactly one
+reopens it. It rolls back over the data and checks the strict guard is back.
+
+```bash
+npm run rehearse:migration:worker-heartbeat
+```
+
+This applies all three migrations and rehearses the heartbeat. It tries to
+break every constraint on the table, checks the view has exactly the nine
+columns the backend reads and that the backend's role can read the view but
+not the table, then runs the heartbeat service's own upsert and prune —
+read out of the service, not copied — beat by beat: a pause records when it
+began, a second paused beat keeps it, resuming or stopping clears it, and
+only a day-stale row is pruned. Ten workers then beat at once. Finally it
+rolls back over the data, checks the scan usage views and the backend's
+schema grant are untouched, and re-applies.
 
 ## Timezone
 

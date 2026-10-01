@@ -1,5 +1,10 @@
 # Infrastructure and Hosting Documentation (Worker)
 
+The operations runbooks for the worker and the backend together — Render and secrets, connection
+budgets, readiness and heartbeats, signatures, alerts, failed jobs, restore, rollback and incidents
+— live in the backend repository, in
+[`docs/operations/`](../../sto-info-backend/docs/operations/README.md) (FC-042).
+
 ## Hosting (Render.com)
 
 ### Overview
@@ -98,6 +103,15 @@ worker to match — ADR-0020. Jobs wait in the queue while the scanner is
 unfit rather than failing in it, and the endpoints report the same answer
 the pipeline is acting on, for a human reading them.
 
+**The heartbeat is how anyone outside the process sees it.** A paused worker
+and an idle one look the same from Render: both are running, both log
+nothing, and the queue behind a paused one simply grows. So every worker
+process writes a row in `sto_info_worker.worker_heartbeat` when it starts,
+every `WORKER_HEARTBEAT_INTERVAL_MS` (30 seconds), as soon as the scanner's
+health changes, and once more as it shuts down (FC-042). The backend reads it
+through the `worker_heartbeat_status` view — see
+[database.md](database.md#worker_heartbeat-and-worker_heartbeat_status).
+
 ## Sizing
 
 Measured against this repository's own image rather than taken from
@@ -145,5 +159,52 @@ Logs are accessible via the Render dashboard. Key things to monitor:
   worker's own log — the second is the durable one and means another worker
   took an attempt mid-scan.
 - Attempts that finished but whose verdict never reached the queue. After a
-  Redis loss these are the backlog, and `resendStrandedVerdicts` is what
-  clears them. See [queues.md](queues.md).
+  Redis loss these are the backlog. The worker resends them itself, once at
+  every start and then every `STRANDED_VERDICT_RESEND_INTERVAL_MS`, and logs
+  `Resent N stranded verdicts` when it finds any. See [queues.md](queues.md).
+- `Heartbeat not recorded`: the worker could not write its heartbeat row.
+  It keeps scanning and tries again at the next beat, but until one lands
+  the backend will call it silent.
+
+### Is the worker paused, idle or gone?
+
+What each state means for the site, and what to do about it, is in the backend's
+[readiness and heartbeats runbook](../../sto-info-backend/docs/operations/readiness-and-heartbeats.md)
+and its [scanner signatures runbook](../../sto-info-backend/docs/operations/scanner-signatures.md).
+
+Read the heartbeat, not the logs. As the backend's role, or any role that
+can read the worker's schema:
+
+```sql
+SELECT "workerId", "state", "pauseReason", "jobsInHand",
+       now() - "beatAt" AS "sinceBeat",
+       now() - "pausedSince" AS "pausedFor",
+       "definitionsVersion", "definitionsBuiltAt"
+FROM "sto_info_worker"."worker_heartbeat_status"
+ORDER BY "beatAt" DESC;
+```
+
+| What it shows | What it means | What to do |
+| --- | --- | --- |
+| `RUNNING`, beat within a minute | Consuming. An empty queue is genuinely idle. | Nothing. |
+| `PAUSED`, beat within a minute | Alive, and refusing work because its scanner is unfit. Jobs wait in the queue; none fail. | Read `pauseReason`, below. |
+| `STOPPING` | Shutting down, finishing any job in hand. A deploy or restart. | A new row should appear from the replacement process. |
+| No row beat in the last two minutes | The process has gone, or cannot reach the database. | Check the Render service and its logs. |
+
+The `pauseReason` codes:
+
+| Code | Meaning |
+| --- | --- |
+| `SCANNER_NOT_ASKED` | The worker has only just started and has not asked `clamd` yet. |
+| `SCANNER_UNREACHABLE` | `clamd` is not answering: still loading its database after a start or reload, or down. |
+| `SIGNATURES_UNDATED` | `clamd` answered but did not say how old its signatures are, which counts as too old. |
+| `SIGNATURES_TOO_OLD` | The signatures are older than `CLAMAV_MAX_DEFINITION_AGE_HOURS`: `freshclam` has been failing. |
+| `UNKNOWN` | A reason this build has no code for. Read the worker's log. |
+
+A paused row with no reason is a worker whose scanner is fit again but whose
+resume did not take. It will not retry on its own while the scanner stays
+fit, so restart the worker if the row stays that way.
+
+`pausedSince` is when the current pause began, and survives every beat while
+the pause lasts. Rows a day stale are removed by the workers themselves, so
+the table only ever holds the processes of the last day.

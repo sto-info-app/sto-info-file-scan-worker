@@ -119,9 +119,52 @@ second delivery either finds a finished attempt — and repeats its verdict
 unchanged, rather than scanning again — or finds a live lease and says
 nothing.
 
+**Except an attempt that failed: reopen, then refuse** (FC-042). `FAILED`
+means a transient fault, and its `RETRY` verdict asks the backend to ask
+again. Before, the row answered every later request with the same `RETRY`
+until the signatures changed — and with the backend's re-queue sweep asking
+every few minutes, that was an upload asked about all day and never scanned.
+Now a request for an attempt that failed **reopens** it, in the same claim
+statement: one more claim, a fresh lease, the old answer cleared, and a
+genuine new scan. That holds while it is under `SCAN_MAX_ATTEMPTS`, which
+counts claims, so with the default of 3 an upload gets three scans. A request
+after the last of them has failed **refuses** it for good with
+`RETRY_BUDGET_EXHAUSTED`, the existing final refusal, so the backend rejects
+the upload and stops asking. `CLEAN` and `REJECTED` are never reopened, and
+the guard trigger allows exactly these two moves from `FAILED` and nothing
+else — `1797500000000-ReopenFailedScanAttempt`.
+
+A worker still holding a lease from before the failure cannot write over the
+new answer: a finished attempt holds no lease and a reopened one holds a new
+one, so its compare-and-set matches nothing.
+
 **A repeated verdict is refused by the registry's state machine.** The
 backend moves the asset out of `SCANNING` when it applies the first one, and
 the second finds an asset that is no longer waiting.
+
+**One job per answer.** The verdict job's identifier is the attempt and the
+moment it answered, `<attemptId>_<scannedAt in epoch milliseconds>`. The
+attempt alone was enough while an attempt answered once; a reopened attempt
+can answer `RETRY` and then `CLEAN`, and under one identifier the clean
+answer would have collapsed into a `RETRY` still waiting, or revived it if
+the backend had failed it. The same answer offered twice still collapses.
+Nothing in the backend reads the identifier; it reads the message. The
+attempt is marked sent for the answer that was sent, matched by its
+`scannedAt` to the millisecond, so the late confirmation of a `RETRY` cannot
+mark the clean answer after it as sent.
+
+**A verdict the backend failed is sent round again** (FC-042). The verdict
+job's identifier is deterministic and failed jobs are kept, and BullMQ ignores
+an `add` whose identifier is already in the queue in any state — so a failed
+verdict used to swallow every later send of the same answer, silently, and
+the upload waited in `SCANNING` until somebody retried the job by hand. Now
+`publish` looks first: when a job under that identifier is in the failed set
+it is retried with its attempts restored instead of added, and the worker
+logs `[publish] Failed verdict sent round again - AttemptId: …`. The backend
+does the same for its own deterministic identifiers, with `reviveFailedJob`;
+the worker keeps a copy because neither repository imports from the other.
+The revived job carries the verdict it was first sent with, which is the same
+answer, since the identifier names the answer.
 
 **A verdict is sent before it is marked sent.** That order is deliberate and
 is the wrong way round on purpose: a crash between the two leaves a verdict
@@ -142,12 +185,32 @@ again. Re-enqueuing lost *requests* is the backend's side of the same
 problem: an asset sitting in `SCANNING` with no attempt row against it is one
 whose request never arrived.
 
+**It runs on its own** (FC-042). Until then nothing called it, so a verdict
+stranded by a Redis loss stayed stranded. `StrandedVerdictSweepService` now
+calls it once as the worker starts, after every module is ready, and then
+every `STRANDED_VERDICT_RESEND_INTERVAL_MS` (ten minutes by default). Each
+pass resends up to 100, oldest first; a sweep keeps making passes while they
+come back full, up to ten, and leaves anything beyond that to the next sweep.
+When it sends any it logs `Resent N stranded verdicts`; a failed job sent
+round again counts, and a row it found but could not build a verdict from
+does not. A sweep that fails is
+logged and the next one tries again; it never stops the worker.
+
+**Resending is harmless when it duplicates.** A sweep can race the pipeline's
+own publish of a verdict that has only just finished, or another worker's
+sweep, and send a verdict that has already gone. The verdict job's identifier
+names the answer, so BullMQ collapses it while the first is still queued, and
+retries it if the first failed. Once
+the first has been consumed the backend refuses the second, as it refuses any
+repeated delivery: the asset is no longer in `SCANNING` (`NOT_SCANNING`), and
+a rescan whose verdict has been settled is left alone.
+
 ## Job options
 
 | Option | Value | Why |
 | --- | --- | --- |
 | `jobId` (request) | `<assetId>_<policyVersion>` | Two requests for the same asset under the same policy collapse; a policy change is a new question. An underscore because BullMQ refuses a custom identifier containing a colon. |
-| `jobId` (verdict) | the attempt's identifier | BullMQ collapses a verdict offered twice. A convenience, not the guarantee. |
+| `jobId` (verdict) | `<attemptId>_<scannedAt ms>` | BullMQ collapses an answer offered twice, and a reopened attempt's new answer gets a job of its own. A convenience, not the guarantee. A failed one is retried rather than added (FC-042). |
 | `attempts` | 5 | With exponential backoff from one second. |
 | `removeOnComplete` | true | Redis is not the audit trail; PostgreSQL is. |
 | `removeOnFail` | false | A job in the failed set is visible. |

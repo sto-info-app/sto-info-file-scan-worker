@@ -41,6 +41,8 @@ Documentation is in [docs/](docs/).
 - [docs/worker-architecture.md](docs/worker-architecture.md)
 - [docs/queues.md](docs/queues.md)
 - [docs/database.md](docs/database.md)
+- The operations runbooks, for this worker and the backend together, are in the backend
+  repository: [docs/operations/](../sto-info-backend/docs/operations/README.md)
 - [docs/github/](docs/github/) — how the CI, quality and security automation is
   wired up, and where to look when a check fails.
 

@@ -16,8 +16,11 @@ absence of that ability is the design rather than a restriction on it.
    BullMQ's delayed set and tried again later, so an outage of ours costs the
    asset nothing. ADR-0020.
 2. **Claim the attempt.** One `INSERT ... ON CONFLICT DO UPDATE` either
-   creates it or takes over one whose lease has lapsed. A finished attempt is
-   a duplicate delivery and its verdict is repeated unchanged. **A live
+   creates it, takes over one whose lease has lapsed, or reopens one that
+   finished `FAILED` while it is under `SCAN_MAX_ATTEMPTS` (FC-042). A
+   `CLEAN` or `REJECTED` attempt is a duplicate delivery and its verdict is
+   repeated unchanged; a `FAILED` one whose budget is spent is refused with
+   `RETRY_BUDGET_EXHAUSTED`. **A live
    lease means another worker has it, and the job is put back in the
    delayed set until a little after that lease lapses** rather than
    finished. By then the holder has answered, and the next delivery repeats
@@ -65,7 +68,8 @@ cannot keep. A rule about crashes has to hold by construction.
 | `WorkerConfigModule` | The settings, read once at startup. Global. |
 | `ScanningModule` | The scanner, behind `SCAN_ENGINE`. Nothing about the database. |
 | `QuarantineModule` | Read-only access to one bucket. Nothing about scanning. |
-| `ScanModule` | The pipeline, the attempt record and the two queues. |
+| `ScanModule` | The pipeline, the attempt record, the two queues and the stranded-verdict sweep. |
+| `HeartbeatModule` | This process's row in `worker_heartbeat`: alive, paused or stopping, and why. Started by the processor it reports on. |
 | `HealthModule` | The probes. They report what the health poll last established and never open a connection of their own. |
 | `SharedModule` | AWS Secrets Manager. |
 | `DatabaseModule` | Puts the session in UTC. |
@@ -120,6 +124,18 @@ be a way for anything that can reach the port to make the worker talk to
 Render's background workers are not probed, so in the deployment it is the
 pause that enforces readiness; the endpoint is for a human and for local use.
 
+**The heartbeat makes the pause visible** (FC-042). From outside, a paused
+worker and an idle one look the same. `WorkerHeartbeatService` writes one row
+per process into `worker_heartbeat` — at start, every
+`WORKER_HEARTBEAT_INTERVAL_MS`, as soon as the scanner's health changes, and
+as `STOPPING` before shutdown — saying whether the BullMQ worker is paused,
+why as a short code (`SCANNER_UNREACHABLE`, `SIGNATURES_TOO_OLD` and so on),
+since when, which signatures it last saw and how many jobs it holds. The
+processor starts it once its own queue has been matched to the scanner, so
+the first row of a worker that starts paused already says so. A beat that
+fails is logged and the next one tries again; nothing in it can stop a scan.
+The backend reads the row through the `worker_heartbeat_status` view.
+
 ## What the bytes are allowed to be
 
 Contract version 2 carries `declaredContentType`: what the upload claimed,
@@ -164,6 +180,17 @@ and a restart during a scan costs the upload that wait and nothing else.
 **Nothing unscanned is published by a restart**, because nothing in this
 repository can publish anything at all.
 
+**A verdict lost with Redis is sent again.** `StrandedVerdictSweepService`
+resends every finished attempt whose verdict never reached the queue, once at
+start and then every `STRANDED_VERDICT_RESEND_INTERVAL_MS` — see
+[queues.md](queues.md#recovering-from-a-redis-loss).
+
+**The heartbeat says what a restart looks like from outside.** The old
+process's row reads `STOPPING` while it finishes the job in hand, and the new
+process writes a row of its own under a new identifier. A process that dies
+without stopping leaves a row whose `beatAt` stops moving; the workers remove
+rows a day stale.
+
 ## Logging
 
 NestJS's own logger, at the levels `LOG_LEVEL` allows. Every line carries the
@@ -177,9 +204,9 @@ like any other, and the backend's officer-canary sweep treats it as one.
 | --- | --- |
 | A message that violates the contract | Logged and dropped. It will violate it identically every time. |
 | The scanner unreachable before an attempt exists | Rethrown, so BullMQ retries and then keeps the job in its failed set. |
-| The scanner unreachable during a scan | `FAILED` → a `RETRY` verdict → the asset waits for another go. |
+| The scanner unreachable during a scan | `FAILED` → a `RETRY` verdict → the backend asks again, and the next request reopens the attempt for a new scan (FC-042). |
 | Signatures too old | The same. The file has done nothing wrong; `freshclam` has. |
 | An infection, an unreadable payload, a hash mismatch, an oversize or missing object | `REJECTED`, final. |
-| The retry budget spent | `REJECTED` with `RETRY_BUDGET_EXHAUSTED`, so the backend hears a final answer rather than leaving an upload in limbo. |
+| The retry budget spent | `REJECTED` with `RETRY_BUDGET_EXHAUSTED`, so the backend hears a final answer rather than leaving an upload in limbo. That covers an attempt claimed that often without answering, and one that failed on its last permitted claim. |
 | The lease lost | Nothing is said. Another worker owns the question. |
 | Another worker holds a live lease | The job is put back until a little after it lapses, then either repeats the holder's verdict or takes the attempt over. |
