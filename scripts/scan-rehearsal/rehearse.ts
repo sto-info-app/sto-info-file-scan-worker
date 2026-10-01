@@ -16,6 +16,7 @@
  * Run it through `npm run rehearse:scan`, which starts the container for it.
  */
 import { execFile } from 'node:child_process';
+import { connect } from 'node:net';
 import { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
@@ -33,6 +34,7 @@ import { ClamdScanEngineService } from '../../src/scanning/clamd-scan-engine.ser
 import { createClamdSocket } from '../../src/scanning/clamd-socket';
 import { EngineHealthService } from '../../src/scanning/engine-health.service';
 import { ScanEngineOutcome } from '../../src/scanning/scan-engine.interface';
+import { nest, zip } from './zip';
 
 /** Where the rehearsal's `clamd` is listening. */
 const HOST = process.env.REHEARSAL_CLAMAV_HOST ?? '127.0.0.1';
@@ -447,6 +449,158 @@ async function reachesTheRightVerdicts(): Promise<void> {
   );
 }
 
+/**
+ * Feeds the scanner archives it cannot finish, and checks none passes.
+ *
+ * `clamd` stops looking when it reaches one of its own limits — recursion,
+ * member count, per-file size, total size, time — and without
+ * `AlertExceedsMax` it then answers `OK` for whatever it had not reached.
+ * EICAR one archive deeper than `MaxRecursion` was therefore a clean upload
+ * (FC-043). These are the shapes that prove the limits now refuse instead,
+ * that an encrypted archive is refused as unscannable rather than reported
+ * as malware, and the one limit clamd does not report at all.
+ */
+async function refusesWhatItCannotFinish(): Promise<void> {
+  console.log('\n=== What it does with archives it cannot finish ===');
+
+  const many = Array.from({ length: 1_001 }, (_unused, index) => ({
+    name: `member-${index}.txt`,
+    data: Buffer.from(`member ${index}`, 'utf8'),
+  }));
+
+  const expectations: [string, Buffer, ScanEngineOutcome][] = [
+    [
+      'EICAR inside an archive is still a detection',
+      zip([{ name: 'eicar.txt', data: EICAR }]),
+      'INFECTED',
+    ],
+    [
+      'EICAR nested within the recursion limit is a detection',
+      nest(EICAR, 9),
+      'INFECTED',
+    ],
+    [
+      'EICAR nested past the recursion limit is refused, not clean',
+      nest(EICAR, 12),
+      'UNSUPPORTED',
+    ],
+    [
+      'harmless text nested past the recursion limit is refused, not clean',
+      nest(CSV, 12),
+      'UNSUPPORTED',
+    ],
+    [
+      'EICAR after more members than the scanner opens is refused, not clean',
+      zip([...many, { name: 'eicar.txt', data: EICAR }]),
+      'UNSUPPORTED',
+    ],
+    [
+      // Recorded because no setting closes it. clamd inflates a member only
+      // up to MaxFileSize and says nothing about the rest, AlertExceedsMax
+      // or not, so EICAR after 70 MiB of padding inside one member passes —
+      // and a PNG carrying such an archive is still a PNG. It is why the
+      // backend re-encodes every picture before it is quarantined (FC-043):
+      // only pixels reach this scanner, and a roster export with a NUL byte
+      // in it is refused before it is stored.
+      'EICAR past the per-file limit inside one member is NOT reported, by clamd',
+      zip([
+        {
+          name: 'padded.bin',
+          data: Buffer.concat([
+            Buffer.alloc(70 * 1024 * 1024),
+            zip([{ name: 'eicar.txt', data: EICAR }]),
+          ]),
+          deflate: true,
+        },
+      ]),
+      'CLEAN',
+    ],
+    [
+      'an encrypted archive is refused as unscannable, not as malware',
+      zip([{ name: 'eicar.txt', data: EICAR }], 'rehearsal'),
+      'UNSUPPORTED',
+    ],
+  ];
+
+  for (const [what, archive, expected] of expectations) {
+    const result = await engine().scan(Readable.from([archive]));
+
+    check(
+      what,
+      result.outcome === expected,
+      `${result.outcome}${result.detail === null ? '' : ` (${result.detail})`}`,
+    );
+  }
+}
+
+/**
+ * Asks the scanner to reload its signatures, as `freshclam` does after an
+ * update, and reads its answer.
+ *
+ * @returns What it said.
+ */
+function reload(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(PORT, HOST);
+    let reply = '';
+
+    socket.on('connect', () =>
+      socket.write(
+        Buffer.concat([Buffer.from('zRELOAD', 'ascii'), Buffer.alloc(1)]),
+      ),
+    );
+    socket.on('data', chunk => {
+      reply += chunk.toString('utf8');
+    });
+    socket.on('end', () => resolve(reply.replace(/[^ -~]/g, '').trim()));
+    socket.on('error', reject);
+  });
+}
+
+/**
+ * Reloads the signatures while a scan is streaming, and checks the scan,
+ * and the ones after it, still judge correctly (FC-043).
+ *
+ * With `ConcurrentDatabaseReload no` clamd holds scans while it loads the
+ * new database rather than keeping two in memory (ADR-0020), so a scan
+ * caught in a reload waits; it must neither fail open nor be mistaken for
+ * a dead scanner.
+ */
+async function survivesASignatureReload(): Promise<void> {
+  console.log('\n=== What a signature reload does to a scan ===');
+
+  const before = await engine().describe();
+  const scanning = engine().scan(bytes(32 * 1024 * 1024));
+
+  await pause(250);
+
+  const answer = await reload();
+  const during = await scanning;
+
+  check('the scanner agrees to reload', answer.includes('RELOADING'), answer);
+  check(
+    'a scan streaming through the reload still comes back clean',
+    during.outcome === 'CLEAN',
+    `${during.outcome}${during.detail === null ? '' : ` (${during.detail})`}`,
+  );
+
+  const detection = await engine().scan(Readable.from([EICAR]));
+
+  check(
+    'EICAR is still a detection after the reload',
+    detection.outcome === 'INFECTED',
+    String(detection.detail),
+  );
+
+  const after = await engine().describe();
+
+  check(
+    'the scanner describes the same signatures after reloading them',
+    after.signatureVersion === before.signatureVersion,
+    `${before.signatureVersion} then ${after.signatureVersion}`,
+  );
+}
+
 /** Takes the scanner away, and checks nothing turns into a pass. */
 async function failsClosed(): Promise<void> {
   console.log('\n=== What it does when the scanner will not answer ===');
@@ -632,6 +786,8 @@ async function main(): Promise<void> {
 
   await describesTheScanner();
   await reachesTheRightVerdicts();
+  await refusesWhatItCannotFinish();
+  await survivesASignatureReload();
   await failsClosed();
   await judgesTheScanner();
   // Last, because it takes the scanner away for as long as it takes to load

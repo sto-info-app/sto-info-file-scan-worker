@@ -149,6 +149,15 @@ npm run rehearse:scan        # the clamd client, against a real clamd
 stale-signature scans, and last restarts the scanner while a scan is
 streaming: that scan must come back not answered, never clean, and the
 scanner must judge files correctly once it has loaded its database again.
+It also feeds the scanner archives it cannot finish (FC-043): EICAR nested
+past `MaxRecursion` or after the thousandth member must be refused, an
+encrypted archive refused as unscannable, and it records the one limit
+clamd never reports — a member inflated past `MaxFileSize` is read only up
+to the limit — which the backend closes by re-encoding every picture.
+And it reloads the signatures while a scan is streaming: the scan, and the
+ones after it, must still judge correctly.
+FC-043's acceptance evidence, which these results feed, is the backend's
+[docs/release/fc-043-acceptance.md](../sto-info-backend/docs/release/fc-043-acceptance.md).
 
 `rehearse:scan` builds its scanner on the public ClamAV image by default.
 Point it at this repository's own image to rehearse the exact container

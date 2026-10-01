@@ -124,7 +124,7 @@ echo "The scanner answered three times in a row after ${waited}s"
 # arrived: the limits below are what the assertions are being made against.
 step 'The limits it is running with'
 docker exec "${CONTAINER}" sh -c \
-  "grep -E '^(TCPAddr|StreamMaxLength|MaxFileSize|MaxScanSize)' /etc/clamav/clamd.conf"
+  "grep -E '^(TCPAddr|StreamMaxLength|MaxFileSize|MaxScanSize|MaxRecursion|MaxFiles|MaxScanTime|AlertExceedsMax)' /etc/clamav/clamd.conf"
 
 step 'Rehearsing'
 REHEARSAL_CLAMAV_HOST=127.0.0.1 REHEARSAL_CLAMAV_PORT="${PORT}" \
