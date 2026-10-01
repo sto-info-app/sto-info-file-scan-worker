@@ -1,13 +1,28 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import { Queue } from 'bullmq';
+import { Logger } from '@nestjs/common';
+
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from '@jest/globals';
+import { Job, Queue } from 'bullmq';
 
 import { ScanVerdictMessage } from '../../contract/file-scan-contract';
 import { FileScanAttemptEntity } from '../entities/file-scan-attempt.entity';
 import { FileScanAttemptState } from '../enums/file-scan-attempt-state.enum';
 import { FileScanAttemptService } from './file-scan-attempt.service';
-import { ScanVerdictPublisherService } from './scan-verdict-publisher.service';
+import {
+  ScanVerdictPublisherService,
+  verdictJobId,
+} from './scan-verdict-publisher.service';
 
 const ATTEMPT_ID = '7c9e1b2d-3a4f-4e5b-9c8d-1a2b3c4d5e6f';
+
+/** The job identifier the verdict below is sent under. */
+const JOB_ID = `${ATTEMPT_ID}_${Date.parse('2026-09-19T12:00:00.000Z')}`;
 
 const VERDICT: ScanVerdictMessage = {
   schemaVersion: 2,
@@ -71,17 +86,19 @@ function attempt(
 
 describe('ScanVerdictPublisherService', () => {
   let add: jest.Mock;
+  let getJob: jest.Mock<(jobId: string) => Promise<Job | undefined>>;
   let markVerdictPublished: jest.Mock;
   let findUnpublishedVerdicts: jest.Mock;
   let service: ScanVerdictPublisherService;
 
   beforeEach(() => {
     add = jest.fn(() => Promise.resolve({}));
+    getJob = jest.fn(() => Promise.resolve(undefined));
     markVerdictPublished = jest.fn(() => Promise.resolve());
     findUnpublishedVerdicts = jest.fn(() => Promise.resolve([]));
 
     service = new ScanVerdictPublisherService(
-      { add } as unknown as Queue,
+      { add, getJob } as unknown as Queue,
       {
         markVerdictPublished,
         findUnpublishedVerdicts,
@@ -96,11 +113,34 @@ describe('ScanVerdictPublisherService', () => {
       expect(add).toHaveBeenCalledWith(
         'record-verdict',
         VERDICT,
-        expect.objectContaining({ jobId: ATTEMPT_ID }),
+        expect.objectContaining({ jobId: JOB_ID }),
       );
     });
 
-    it('keys the job on the attempt, so BullMQ collapses a repeat', async () => {
+    it('keys the job on the attempt and the answer, with no colon', () => {
+      expect(verdictJobId(VERDICT)).toBe(JOB_ID);
+      expect(verdictJobId(VERDICT)).not.toContain(':');
+    });
+
+    it('gives a reopened attempt’s new answer a job of its own', () => {
+      // Under one identifier a clean answer after a RETRY would collapse into
+      // the RETRY while it waited, or revive it if the backend had failed it
+      // (FC-042).
+      expect(
+        verdictJobId({ ...VERDICT, scannedAt: '2026-09-19T12:05:00.000Z' }),
+      ).not.toBe(verdictJobId(VERDICT));
+    });
+
+    it('records as sent the answer it sent, by when it was given', async () => {
+      await service.publish(VERDICT);
+
+      expect(markVerdictPublished).toHaveBeenCalledWith(
+        ATTEMPT_ID,
+        VERDICT.scannedAt,
+      );
+    });
+
+    it('keys the job on the answer, so BullMQ collapses a repeat', async () => {
       await service.publish(VERDICT);
       await service.publish(VERDICT);
 
@@ -128,6 +168,84 @@ describe('ScanVerdictPublisherService', () => {
 
       await expect(service.publish(VERDICT)).rejects.toThrow('no redis');
       expect(markVerdictPublished).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a verdict whose earlier job the backend failed', () => {
+    let retry: jest.Mock<(state: string, options: object) => Promise<void>>;
+    let failed: boolean;
+
+    beforeEach(() => {
+      failed = true;
+      retry = jest.fn(() => Promise.resolve());
+      getJob.mockImplementation(() =>
+        Promise.resolve({
+          isFailed: () => Promise.resolve(failed),
+          retry,
+        } as unknown as Job),
+      );
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('sends the failed job round again, with its attempts restored', async () => {
+      // BullMQ ignores an add whose identifier is already in the queue, in
+      // any state, and failed verdict jobs are kept. Adding would silently
+      // do nothing and leave the upload waiting for good.
+      await service.publish(VERDICT);
+
+      expect(getJob).toHaveBeenCalledWith(JOB_ID);
+      expect(retry).toHaveBeenCalledWith('failed', {
+        resetAttemptsMade: true,
+        resetAttemptsStarted: true,
+      });
+      expect(add).not.toHaveBeenCalled();
+    });
+
+    it('records it as sent, and says it went round again', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.publish(VERDICT);
+
+      expect(markVerdictPublished).toHaveBeenCalledWith(
+        ATTEMPT_ID,
+        VERDICT.scannedAt,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        `[publish] Failed verdict sent round again - AttemptId: ${ATTEMPT_ID}`,
+      );
+    });
+
+    it('adds as usual when the job is there but has not failed', async () => {
+      // Waiting or running: the add collapses into it, which is the point
+      // of keying the job on the attempt.
+      failed = false;
+
+      await service.publish(VERDICT);
+
+      expect(retry).not.toHaveBeenCalled();
+      expect(add).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not mark it sent when the retry was refused', async () => {
+      retry.mockImplementationOnce(() => Promise.reject(new Error('gone')));
+
+      await expect(service.publish(VERDICT)).rejects.toThrow('gone');
+      expect(markVerdictPublished).not.toHaveBeenCalled();
+    });
+
+    it('counts a stranded verdict sent round again as resent', async () => {
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      findUnpublishedVerdicts.mockImplementationOnce(() =>
+        Promise.resolve([attempt()]),
+      );
+
+      await expect(service.resendStrandedVerdicts()).resolves.toBe(1);
+      expect(retry).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -169,8 +287,22 @@ describe('ScanVerdictPublisherService', () => {
         ]),
       );
 
-      await expect(service.resendStrandedVerdicts()).resolves.toBe(1);
+      // Counted as nothing: the sweep reads a full batch as a sign there
+      // are more, and a row it skipped was not sent.
+      await expect(service.resendStrandedVerdicts()).resolves.toBe(0);
       expect(add).not.toHaveBeenCalled();
+    });
+
+    it('counts only the rows it sent when some were skipped', async () => {
+      findUnpublishedVerdicts.mockImplementationOnce(() =>
+        Promise.resolve([
+          attempt({ state: FileScanAttemptState.SCANNING, completedAt: null }),
+          attempt(),
+        ]),
+      );
+
+      await expect(service.resendStrandedVerdicts()).resolves.toBe(1);
+      expect(add).toHaveBeenCalledTimes(1);
     });
   });
 });
