@@ -280,6 +280,63 @@ describe('FileScanAttemptService', () => {
       });
     });
 
+    it('reopens an attempt that failed, under its budget, in the same statement', async () => {
+      // A failed attempt met a transient fault, so a new request is a new
+      // scan. Answering RETRY from the row for ever would have the backend
+      // ask all day (FC-042).
+      await service.claim(REQUEST, DESCRIPTION, REQUESTED_AT);
+
+      expect(sql()).toContain(`"state" = 'FAILED'`);
+      expect(sql()).toContain('"attemptCount" < $14');
+      expect(sql()).toContain('"completedAt" = NULL');
+      expect(sql()).toContain('"verdictPublishedAt" = NULL');
+      expect(sql()).toContain('"failureReason" = NULL');
+    });
+
+    it('asks again at once when a failed attempt under budget was not reopened', async () => {
+      // Only another worker reopening it, and failing again, in between the
+      // two statements leaves it so.
+      findOne.mockImplementationOnce(() =>
+        Promise.resolve(
+          attempt({
+            state: FileScanAttemptState.FAILED,
+            attemptCount: 2,
+            completedAt: new Date(),
+          }),
+        ),
+      );
+
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({ kind: 'BUSY', leaseExpiresAt: null });
+      expect(query).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses an attempt that failed on its last permitted claim', async () => {
+      const spent = attempt({
+        state: FileScanAttemptState.FAILED,
+        attemptCount: 3,
+        completedAt: new Date(),
+      });
+      const refused = attempt({
+        attemptCount: 3,
+        state: FileScanAttemptState.REJECTED,
+        rejectionCode: 'RETRY_BUDGET_EXHAUSTED',
+        completedAt: new Date(),
+      });
+
+      findOne.mockImplementationOnce(() => Promise.resolve(spent));
+      query.mockImplementationOnce(() => Promise.resolve([]));
+      query.mockImplementationOnce(() => Promise.resolve([[refused], 1]));
+
+      await expect(
+        service.claim(REQUEST, DESCRIPTION, REQUESTED_AT),
+      ).resolves.toEqual({ kind: 'EXHAUSTED', attempt: refused });
+      expect(sql(1)).toContain(`"state" = 'FAILED'`);
+      expect(sql(1)).toContain('"verdictPublishedAt" = NULL');
+      expect(parameters(1)).toEqual([spent.id, 'Failed on all 3 claims']);
+    });
+
     it('refuses an attempt that has used its budget', async () => {
       const spent = attempt({ attemptCount: 3 });
       const refused = attempt({
@@ -420,9 +477,25 @@ describe('FileScanAttemptService', () => {
 
   describe('the recovery path', () => {
     it('marks a verdict published only once', async () => {
-      await service.markVerdictPublished('attempt-1');
+      await service.markVerdictPublished(
+        'attempt-1',
+        '2026-09-30T10:00:00.000Z',
+      );
 
       expect(sql()).toContain('"verdictPublishedAt" IS NULL');
+    });
+
+    it('marks only the answer that was sent, by when it was given', async () => {
+      // A reopened attempt answers more than once. The late confirmation of
+      // the RETRY sent before the reopening must not mark the clean answer
+      // after it as sent, or the clean answer would never go.
+      await service.markVerdictPublished(
+        'attempt-1',
+        '2026-09-30T10:00:00.000Z',
+      );
+
+      expect(sql()).toContain('"completedAt" BETWEEN $2::timestamptz');
+      expect(parameters()).toEqual(['attempt-1', '2026-09-30T10:00:00.000Z']);
     });
 
     it('finds finished attempts whose verdict never went out', async () => {

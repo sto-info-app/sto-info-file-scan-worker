@@ -29,11 +29,12 @@
 # Usage:
 #   bash scripts/migration-rehearsal/run-rehearsal.sh [<migration.ts>[,<migration.ts>...]] [<name>]
 #
-# Several migrations, separated by commas, are applied in order. The last one
-# is the subject: only it is rolled back and re-applied, and the ones before it
-# are the schema it was written against. A suite with its own
-# `<name>-after-down.sql` checks the rollback itself; otherwise the rollback
-# must leave `sto_info_worker` empty.
+# Several migrations, separated by commas, are applied in order. A suite with
+# its own `<name>-after-down.sql` has the last one as its subject: only it is
+# rolled back, checked by that file and re-applied, and the ones before it are
+# the schema it was written against. A suite without one rolls the whole chain
+# back, last first, and that must leave `sto_info_worker` empty; then it
+# re-applies the chain. With a single migration the two readings agree.
 #
 set -euo pipefail
 
@@ -137,10 +138,10 @@ fi
 
 # Rolling back an empty schema proves very little. This rolls back over the
 # rows the assertions left behind, which is the case that actually goes wrong.
-step "Rolling back ${MIGRATION_LIST[${LAST}]} (down) with data present"
-psql_file "${WORK}/down-${LAST}.sql"
-
 if [ -f "${AFTER_DOWN}" ]; then
+  step "Rolling back ${MIGRATION_LIST[${LAST}]} (down) with data present"
+  psql_file "${WORK}/down-${LAST}.sql"
+
   step 'Asserting what the rollback left'
   psql_file "${AFTER_DOWN}"
 
@@ -150,6 +151,11 @@ if [ -f "${AFTER_DOWN}" ]; then
   printf '\nREHEARSAL PASSED: up -> assert -> down (with data) -> up, on %s\n' "${PG_IMAGE}"
   exit 0
 fi
+
+for ((index = LAST; index >= 0; index--)); do
+  step "Rolling back ${MIGRATION_LIST[${index}]} (down) with data present"
+  psql_file "${WORK}/down-${index}.sql"
+done
 
 remaining="$(psql_value "SELECT count(*) FROM information_schema.tables WHERE table_schema='sto_info_worker'")"
 types="$(psql_value "SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='sto_info_worker' AND t.typtype='e'")"
@@ -173,7 +179,9 @@ if [ "${backend_tables}" -ne "${expected_stubs}" ]; then
 fi
 echo "PASS: rollback emptied sto_info_worker and left sto_info_app alone"
 
-step 'Re-applying the migration to the same database'
-psql_file "${WORK}/up-${LAST}.sql"
+for index in "${!MIGRATION_LIST[@]}"; do
+  step "Re-applying ${MIGRATION_LIST[${index}]} to the same database"
+  psql_file "${WORK}/up-${index}.sql"
+done
 
 printf '\nREHEARSAL PASSED: up -> assert -> down (with data) -> up, on %s\n' "${PG_IMAGE}"

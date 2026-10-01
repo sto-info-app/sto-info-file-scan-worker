@@ -24,6 +24,101 @@ const TABLE = `"${WORKER_DATABASE_SCHEMA}"."file_scan_attempt"`;
 /** The states an attempt may still be worked on from. */
 const OPEN_STATES = `('CLAIMED', 'SCANNING')`;
 
+/**
+ * Creates an attempt, or takes over one that may be taken over.
+ *
+ * Two kinds of existing attempt may be, and only while the attempt is under
+ * its budget (`$14`, `SCAN_MAX_ATTEMPTS`), counted in claims:
+ *
+ * - **an open one whose lease has lapsed** — its holder has gone;
+ * - **one that finished `FAILED`** — a transient fault, so a new request is
+ *   a genuine new scan (FC-042). It is reopened: a fresh lease, and nothing
+ *   of the old answer left on it, including the record that its `RETRY`
+ *   verdict was sent, so the new answer is sent in turn.
+ *
+ * `CLEAN` and `REJECTED` are never taken over: a new request for one of
+ * those repeats its verdict. The guard trigger allows the reopening, and only
+ * in exactly this shape — `1797500000000-ReopenFailedScanAttempt`.
+ *
+ * Exported so the migration rehearsal runs this statement rather than a copy.
+ */
+export const CLAIM_ATTEMPT = `INSERT INTO ${TABLE} (
+     "assetId", "objectKey", "objectVersion", "expectedSha256",
+     "policyVersion", "definitionEpoch", "campaignId", "traceId",
+     "state", "engine", "engineVersion", "signatureVersion",
+     "definitionsBuiltAt", "requestedAt",
+     "attemptCount", "leaseToken", "leaseExpiresAt", "heartbeatAt"
+   )
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CLAIMED', $9, $10, $11,
+           $15, $16,
+           1, $12, now() + ($13 || ' milliseconds')::interval, now())
+   ON CONFLICT ON CONSTRAINT "UQ_file_scan_attempt_idempotency"
+   DO UPDATE SET
+     "state" = 'CLAIMED',
+     "engineVersion" = EXCLUDED."engineVersion",
+     "signatureVersion" = EXCLUDED."signatureVersion",
+     "definitionsBuiltAt" = EXCLUDED."definitionsBuiltAt",
+     "attemptCount" = ${TABLE}."attemptCount" + 1,
+     "leaseToken" = EXCLUDED."leaseToken",
+     "leaseExpiresAt" = EXCLUDED."leaseExpiresAt",
+     "heartbeatAt" = now(),
+     "startedAt" = NULL,
+     "observedSha256" = NULL,
+     "byteSize" = NULL,
+     "detectedContentType" = NULL,
+     "rejectionCode" = NULL,
+     "failureReason" = NULL,
+     "completedAt" = NULL,
+     "verdictPublishedAt" = NULL
+   WHERE ${TABLE}."attemptCount" < $14
+     AND (${TABLE}."state" = 'FAILED'
+          OR (${TABLE}."state" IN ${OPEN_STATES}
+              AND (${TABLE}."leaseExpiresAt" IS NULL
+                   OR ${TABLE}."leaseExpiresAt" < now())))
+   RETURNING *`;
+
+/**
+ * Closes an attempt for good, because its budget is spent.
+ *
+ * Either an open one nobody is holding, or one that finished `FAILED` on its
+ * last permitted claim (FC-042). The refusal is a new answer, so the record
+ * that the old one was sent is cleared and the refusal is sent in turn.
+ *
+ * Exported so the migration rehearsal runs this statement rather than a copy.
+ */
+export const REFUSE_EXHAUSTED_ATTEMPT = `UPDATE ${TABLE}
+   SET "state" = 'REJECTED',
+       "rejectionCode" = 'RETRY_BUDGET_EXHAUSTED',
+       "failureReason" = $2,
+       "completedAt" = now(),
+       "leaseToken" = NULL,
+       "leaseExpiresAt" = NULL,
+       "verdictPublishedAt" = NULL
+   WHERE "id" = $1
+     AND ("state" = 'FAILED'
+          OR ("state" IN ${OPEN_STATES}
+              AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" < now())))
+   RETURNING *`;
+
+/**
+ * Records that one answer's verdict reached the queue.
+ *
+ * The answer is named by when it was given (`$2`, the verdict's
+ * `scannedAt`), because a reopened attempt gives more than one. Marking by
+ * the attempt alone would let the late confirmation of a `RETRY` sent before
+ * a reopening mark the new answer as sent, and the new answer would then
+ * never be. The window is a millisecond either side, because the verdict
+ * carries milliseconds and the column microseconds; two answers to one
+ * attempt are a whole claim and scan apart.
+ *
+ * Exported so the migration rehearsal runs this statement rather than a copy.
+ */
+export const MARK_VERDICT_PUBLISHED = `UPDATE ${TABLE}
+   SET "verdictPublishedAt" = now()
+   WHERE "id" = $1 AND "verdictPublishedAt" IS NULL
+     AND "completedAt" BETWEEN $2::timestamptz - interval '1 millisecond'
+                           AND $2::timestamptz + interval '1 millisecond'`;
+
 /** What a claim found. */
 export type ClaimOutcome =
   /** The attempt is this worker's, and the bytes may be read. */
@@ -112,7 +207,8 @@ export class FileScanAttemptService {
    *
    * One statement does the work. `INSERT ... ON CONFLICT DO UPDATE` against
    * the idempotency constraint either creates the attempt or takes over an
-   * existing one whose lease has lapsed, and the `WHERE` on the update is
+   * existing one whose lease has lapsed or which failed, under its budget —
+   * see {@link CLAIM_ATTEMPT} — and the `WHERE` on the update is
    * what stops it touching an attempt that has already answered or that
    * somebody else is holding. Two statements — look, then write — would have
    * a gap between them wide enough for two workers to both decide they had
@@ -129,52 +225,24 @@ export class FileScanAttemptService {
     requestedAt: Date,
   ): Promise<ClaimOutcome> {
     const leaseToken = randomUUID();
-    const claimed = await this._repository.query(
-      `INSERT INTO ${TABLE} (
-         "assetId", "objectKey", "objectVersion", "expectedSha256",
-         "policyVersion", "definitionEpoch", "campaignId", "traceId",
-         "state", "engine", "engineVersion", "signatureVersion",
-         "definitionsBuiltAt", "requestedAt",
-         "attemptCount", "leaseToken", "leaseExpiresAt", "heartbeatAt"
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CLAIMED', $9, $10, $11,
-               $15, $16,
-               1, $12, now() + ($13 || ' milliseconds')::interval, now())
-       ON CONFLICT ON CONSTRAINT "UQ_file_scan_attempt_idempotency"
-       DO UPDATE SET
-         "state" = 'CLAIMED',
-         "engineVersion" = EXCLUDED."engineVersion",
-         "signatureVersion" = EXCLUDED."signatureVersion",
-         "definitionsBuiltAt" = EXCLUDED."definitionsBuiltAt",
-         "attemptCount" = ${TABLE}."attemptCount" + 1,
-         "leaseToken" = EXCLUDED."leaseToken",
-         "leaseExpiresAt" = EXCLUDED."leaseExpiresAt",
-         "heartbeatAt" = now(),
-         "startedAt" = NULL
-       WHERE ${TABLE}."state" IN ${OPEN_STATES}
-         AND (${TABLE}."leaseExpiresAt" IS NULL
-              OR ${TABLE}."leaseExpiresAt" < now())
-         AND ${TABLE}."attemptCount" < $14
-       RETURNING *`,
-      [
-        request.assetId,
-        request.objectKey,
-        request.objectVersion,
-        request.expectedSha256,
-        request.policyVersion,
-        description.definitionEpoch,
-        request.campaignId,
-        request.traceId,
-        description.engine,
-        description.engineVersion,
-        description.signatureVersion,
-        leaseToken,
-        String(this._settings.leaseMs),
-        this._settings.maxAttempts,
-        description.definitionsBuiltAt,
-        requestedAt,
-      ],
-    );
+    const claimed = await this._repository.query(CLAIM_ATTEMPT, [
+      request.assetId,
+      request.objectKey,
+      request.objectVersion,
+      request.expectedSha256,
+      request.policyVersion,
+      description.definitionEpoch,
+      request.campaignId,
+      request.traceId,
+      description.engine,
+      description.engineVersion,
+      description.signatureVersion,
+      leaseToken,
+      String(this._settings.leaseMs),
+      this._settings.maxAttempts,
+      description.definitionsBuiltAt,
+      requestedAt,
+    ]);
 
     if (claimed.length === 1) {
       return { kind: 'CLAIMED', attempt: claimed[0] as FileScanAttemptEntity };
@@ -313,15 +381,19 @@ export class FileScanAttemptService {
    * between the two leaves a completed attempt marked unpublished. That is
    * recoverable; the reverse is a verdict nobody ever hears.
    *
+   * Only for the answer that was sent: see {@link MARK_VERDICT_PUBLISHED}.
+   *
    * @param attemptId - The attempt.
+   * @param scannedAt - When the answer that was sent was given.
    */
-  async markVerdictPublished(attemptId: string): Promise<void> {
-    await this._repository.query(
-      `UPDATE ${TABLE}
-       SET "verdictPublishedAt" = now()
-       WHERE "id" = $1 AND "verdictPublishedAt" IS NULL`,
-      [attemptId],
-    );
+  async markVerdictPublished(
+    attemptId: string,
+    scannedAt: string,
+  ): Promise<void> {
+    await this._repository.query(MARK_VERDICT_PUBLISHED, [
+      attemptId,
+      scannedAt,
+    ]);
   }
 
   /**
@@ -375,11 +447,22 @@ export class FileScanAttemptService {
       return { kind: 'BUSY', leaseExpiresAt: null };
     }
 
+    const underBudget = existing.attemptCount < this._settings.maxAttempts;
+
+    if (existing.state === FileScanAttemptState.FAILED) {
+      // Under budget, the claim would have reopened it; finding it so means
+      // another worker reopened it and failed again in between. Asking again
+      // straight away settles which it is.
+      return underBudget
+        ? { kind: 'BUSY', leaseExpiresAt: null }
+        : this.refuseExhausted(existing);
+    }
+
     if (existing.completedAt !== null) {
       return { kind: 'DUPLICATE', attempt: existing };
     }
 
-    if (existing.attemptCount < this._settings.maxAttempts) {
+    if (underBudget) {
       return { kind: 'BUSY', leaseExpiresAt: existing.leaseExpiresAt };
     }
 
@@ -394,25 +477,25 @@ export class FileScanAttemptService {
    * would silence an answer that was about to arrive, and the point of the
    * budget is to stop attempts accumulating, not to interrupt one.
    *
+   * An attempt that failed on its last permitted claim is closed the same
+   * way (FC-042). Answering `RETRY` again would have the backend ask again
+   * for ever; the refusal is final, so the backend refuses the upload and
+   * stops asking.
+   *
    * @param existing - The attempt.
    * @returns What the claim found.
    */
   private async refuseExhausted(
     existing: FileScanAttemptEntity,
   ): Promise<ClaimOutcome> {
-    const refused = await this.updateReturning(
-      `UPDATE ${TABLE}
-       SET "state" = 'REJECTED',
-           "rejectionCode" = 'RETRY_BUDGET_EXHAUSTED',
-           "failureReason" = $2,
-           "completedAt" = now(),
-           "leaseToken" = NULL,
-           "leaseExpiresAt" = NULL
-       WHERE "id" = $1 AND "state" IN ${OPEN_STATES}
-         AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" < now())
-       RETURNING *`,
-      [existing.id, `Claimed ${existing.attemptCount} times without an answer`],
-    );
+    const reason =
+      existing.state === FileScanAttemptState.FAILED
+        ? `Failed on all ${existing.attemptCount} claims`
+        : `Claimed ${existing.attemptCount} times without an answer`;
+    const refused = await this.updateReturning(REFUSE_EXHAUSTED_ATTEMPT, [
+      existing.id,
+      reason,
+    ]);
 
     if (refused.length === 0) {
       return { kind: 'BUSY', leaseExpiresAt: existing.leaseExpiresAt };
