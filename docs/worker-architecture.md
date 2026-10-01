@@ -93,6 +93,23 @@ the client does not recognise, and a signature database older than the policy
 allows are all *not clean*, and there is no path through the client that
 turns silence into a pass.
 
+**A limit is not a pass either (FC-043).** `clamd` stops looking when it
+reaches `MaxRecursion`, `MaxFiles`, `MaxScanSize` or `MaxScanTime`, and
+without `AlertExceedsMax` it then answered `OK` for what it had not read:
+the scan rehearsal showed EICAR one archive deeper than the limit, or after
+the thousandth member, coming back clean. `docker/clamd.conf` now sets
+`AlertExceedsMax yes`, and `MaxScanTime` (90 s) sits below the worker's own
+`SCAN_TIMEOUT_MS` (120 s) so clamd ends a long scan with a reason. The
+client reads `Heuristics.Limits.Exceeded.*` and `Heuristics.Encrypted.*` as
+`UNSUPPORTED` — the file cannot be scanned — rather than `INFECTED`; every
+other detection stays `INFECTED`.
+
+One limit is never reported: a member inflated past `MaxFileSize` is read
+only up to it. No setting changes that, so it is closed before the
+scanner. The backend re-encodes every picture at ingress, so only pixels are
+quarantined, and a roster export carrying a NUL byte is refused before it is
+stored and again here.
+
 The escalation ADR-0005 names — moving `clamd` out into its own Render
 private service — changes the socket factory and nothing else.
 

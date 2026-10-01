@@ -38,6 +38,17 @@ const INSTREAM_CHUNK_BYTES = 64 * 1024;
 const INSTREAM_TERMINATOR = Buffer.alloc(4);
 
 /**
+ * The detections that mean "could not look", not "found something".
+ *
+ * `Heuristics.Limits.Exceeded.*` is what `AlertExceedsMax` reports for each
+ * of `MaxRecursion`, `MaxFiles`, `MaxFileSize`, `MaxScanSize` and
+ * `MaxScanTime`; `Heuristics.Encrypted.*` is what the `AlertEncrypted*`
+ * options report for an archive or document it cannot decrypt.
+ */
+const UNSCANNABLE_HEURISTIC =
+  /:\s*Heuristics\.(?:Limits\.Exceeded|Encrypted)\.\S+ FOUND$/;
+
+/**
  * ClamAV, spoken to over the `clamd` socket protocol.
  *
  * ADR-0005 selected ClamAV and chose to run it as `clamd` inside the worker
@@ -125,6 +136,16 @@ export class ClamdScanEngineService implements ScanEngine {
     const answer = reply.trim();
 
     if (/\bFOUND$/.test(answer)) {
+      // Two heuristics report what the scanner could not look at rather
+      // than anything it found: a limit it reached before finishing (with
+      // `AlertExceedsMax`, without which it answers OK for the unread
+      // remainder) and encryption it cannot see through. Neither is a clean
+      // answer and neither is malware, so the uploader is told the file
+      // cannot be scanned rather than that it is infected (FC-043).
+      if (UNSCANNABLE_HEURISTIC.test(answer)) {
+        return { outcome: 'UNSUPPORTED', detail: answer };
+      }
+
       return { outcome: 'INFECTED', detail: answer };
     }
 

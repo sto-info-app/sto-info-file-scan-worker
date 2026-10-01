@@ -330,6 +330,36 @@ describe('ClamdScanEngineService', () => {
         'UNSUPPORTED',
         'stream: Encrypted.Zip ERROR',
       ],
+      [
+        'a limit it reached before finishing',
+        'stream: Heuristics.Limits.Exceeded.MaxRecursion FOUND',
+        'UNSUPPORTED',
+        'stream: Heuristics.Limits.Exceeded.MaxRecursion FOUND',
+      ],
+      [
+        'its time limit',
+        'stream: Heuristics.Limits.Exceeded.MaxScanTime FOUND',
+        'UNSUPPORTED',
+        'stream: Heuristics.Limits.Exceeded.MaxScanTime FOUND',
+      ],
+      [
+        'an encrypted archive',
+        'stream: Heuristics.Encrypted.Zip FOUND',
+        'UNSUPPORTED',
+        'stream: Heuristics.Encrypted.Zip FOUND',
+      ],
+      [
+        'an encrypted document',
+        'stream: Heuristics.Encrypted.PDF FOUND',
+        'UNSUPPORTED',
+        'stream: Heuristics.Encrypted.PDF FOUND',
+      ],
+      [
+        'any other heuristic as a detection',
+        'stream: Heuristics.Broken.Executable FOUND',
+        'INFECTED',
+        'stream: Heuristics.Broken.Executable FOUND',
+      ],
     ])('reads %s', async (_description, reply, outcome, detail) => {
       await expect(scanWith([Buffer.from('x')], reply)).resolves.toEqual({
         outcome,
