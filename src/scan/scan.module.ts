@@ -6,6 +6,7 @@ import {
   FILE_SCAN_REQUEST_QUEUE,
   FILE_SCAN_VERDICT_QUEUE,
 } from '../contract/file-scan-contract';
+import { HeartbeatModule } from '../heartbeat/heartbeat.module';
 import { QuarantineModule } from '../quarantine/quarantine.module';
 import { ScanningModule } from '../scanning/scanning.module';
 import { FileScanAttemptEntity } from './entities/file-scan-attempt.entity';
@@ -13,6 +14,7 @@ import { FileScanProcessor } from './processors/file-scan.processor';
 import { FileScanAttemptService } from './services/file-scan-attempt.service';
 import { FileScanService } from './services/file-scan.service';
 import { ScanVerdictPublisherService } from './services/scan-verdict-publisher.service';
+import { StrandedVerdictSweepService } from './services/stranded-verdict-sweep.service';
 
 /**
  * The worker's reason for existing: take a request, answer with a verdict.
@@ -33,12 +35,14 @@ import { ScanVerdictPublisherService } from './services/scan-verdict-publisher.s
     TypeOrmModule.forFeature([FileScanAttemptEntity]),
     QuarantineModule,
     ScanningModule,
+    HeartbeatModule,
   ],
   providers: [
     FileScanAttemptService,
     FileScanService,
     FileScanProcessor,
     ScanVerdictPublisherService,
+    StrandedVerdictSweepService,
   ],
   exports: [ScanVerdictPublisherService],
 })
