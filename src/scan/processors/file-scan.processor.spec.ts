@@ -7,6 +7,10 @@ import { DelayedError, Job } from 'bullmq';
 import { WorkerSettings } from '../../config/worker-settings';
 import { ScanVerdictMessage } from '../../contract/file-scan-contract';
 import {
+  WorkerActivity,
+  WorkerHeartbeatService,
+} from '../../heartbeat/worker-heartbeat.service';
+import {
   EngineHealth,
   EngineHealthListener,
   EngineHealthService,
@@ -102,6 +106,7 @@ describe('FileScanProcessor', () => {
   let pause: jest.Mock;
   let resume: jest.Mock;
   let paused: boolean;
+  let start: jest.Mock<(activity: WorkerActivity) => void>;
   let processor: FileScanProcessor;
 
   /**
@@ -141,6 +146,7 @@ describe('FileScanProcessor', () => {
     scan = jest.fn(() => Promise.resolve(VERDICT));
     publish = jest.fn(() => Promise.resolve());
     current = jest.fn(() => FIT);
+    start = jest.fn();
 
     processor = new FileScanProcessor(
       { scan } as unknown as FileScanService,
@@ -150,6 +156,7 @@ describe('FileScanProcessor', () => {
         onChange: (listener: EngineHealthListener) => listeners.push(listener),
       } as unknown as EngineHealthService,
       SETTINGS,
+      { start } as unknown as WorkerHeartbeatService,
     );
 
     attachWorker(processor);
@@ -192,6 +199,7 @@ describe('FileScanProcessor', () => {
           onChange: () => undefined,
         } as unknown as EngineHealthService,
         { ...SETTINGS, schemaVersion: 0 } as WorkerSettings,
+        { start } as unknown as WorkerHeartbeatService,
       );
       attachWorker(processor);
 
@@ -376,6 +384,51 @@ describe('FileScanProcessor', () => {
 
       expect(pause).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('what it tells the heartbeat', () => {
+    it('starts the heartbeat, reporting on itself, once the queue is matched', () => {
+      current.mockReturnValue(UNFIT);
+
+      processor.onApplicationBootstrap();
+
+      expect(start).toHaveBeenCalledWith(processor);
+      expect(pause.mock.invocationCallOrder[0]).toBeLessThan(
+        start.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('reports whether its BullMQ worker is paused', () => {
+      expect(processor.isPaused()).toBe(false);
+
+      paused = true;
+
+      expect(processor.isPaused()).toBe(true);
+    });
+
+    it('counts a job as in hand while it is being handled', async () => {
+      let during = -1;
+      scan.mockImplementationOnce(() => {
+        during = processor.jobsInHand();
+
+        return Promise.resolve(VERDICT);
+      });
+
+      await processor.process(job(FIXTURE.request));
+
+      expect(during).toBe(1);
+      expect(processor.jobsInHand()).toBe(0);
+    });
+
+    it('stops counting a job that failed', async () => {
+      scan.mockImplementationOnce(() => Promise.reject(new Error('no clamd')));
+
+      await expect(processor.process(job(FIXTURE.request))).rejects.toThrow(
+        'no clamd',
+      );
+
+      expect(processor.jobsInHand()).toBe(0);
     });
   });
 

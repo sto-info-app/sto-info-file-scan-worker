@@ -78,6 +78,18 @@ services:
       - key: SCAN_UNHEALTHY_RETRY_MS
         value: 60000
 
+      # Render never probes a background worker, so a paused worker looks
+      # idle. Each process writes a row in sto_info_worker.worker_heartbeat
+      # this often, and the backend calls it silent after two minutes
+      # (FC-042). At most 60000, so one missed beat raises nothing.
+      - key: WORKER_HEARTBEAT_INTERVAL_MS
+        value: 30000
+
+      # How often verdicts that finished while Redis was away are sent again.
+      # They are also sent once at every start.
+      - key: STRANDED_VERDICT_RESEND_INTERVAL_MS
+        value: 600000
+
       # Everything below is environment-specific or secret and is set in the
       # dashboard rather than here.
       - key: AWS_SECRET_NAME
@@ -99,7 +111,8 @@ services:
       - key: DB_USERNAME
         sync: false
       # The backend's database role. Only the migrations read it, to grant
-      # the backend the scan usage views; `start:render` runs them first.
+      # the backend the scan usage and worker heartbeat views;
+      # `start:render` runs them first.
       - key: BACKEND_DB_ROLE
         sync: false
 

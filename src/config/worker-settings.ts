@@ -54,6 +54,10 @@ export interface WorkerSettings {
   readonly healthPollMs: number;
   /** How long a job waits when it arrives at an unfit scanner. */
   readonly unhealthyRetryMs: number;
+  /** How often this process writes its row in `worker_heartbeat`. */
+  readonly workerHeartbeatIntervalMs: number;
+  /** How often finished verdicts that never reached the queue are resent. */
+  readonly strandedVerdictResendIntervalMs: number;
   /** Where `clamd` is listening. */
   readonly clamdHost: string;
   /** Which port `clamd` is listening on. */
@@ -275,6 +279,22 @@ export function readWorkerSettings(
       60_000,
       1_000,
       3_600_000,
+    ),
+    // At most a minute, because the backend calls a worker silent after two
+    // (FC-042): one missed beat must not be enough to raise an alert.
+    workerHeartbeatIntervalMs: readNumber(
+      environment,
+      'WORKER_HEARTBEAT_INTERVAL_MS',
+      30_000,
+      5_000,
+      60_000,
+    ),
+    strandedVerdictResendIntervalMs: readNumber(
+      environment,
+      'STRANDED_VERDICT_RESEND_INTERVAL_MS',
+      600_000,
+      60_000,
+      86_400_000,
     ),
     clamdHost: environment.CLAMAV_HOST?.trim() || '127.0.0.1',
     clamdPort: readNumber(environment, 'CLAMAV_PORT', 3310, 1, 65_535),

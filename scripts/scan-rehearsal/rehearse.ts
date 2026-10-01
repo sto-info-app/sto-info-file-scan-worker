@@ -19,7 +19,16 @@ import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
+import { DataSource } from 'typeorm';
+
 import { WorkerSettings } from '../../src/config/worker-settings';
+import {
+  HEARTBEAT_UPSERT,
+  WorkerHeartbeatService,
+} from '../../src/heartbeat/worker-heartbeat.service';
+import { FileScanProcessor } from '../../src/scan/processors/file-scan.processor';
+import { FileScanService } from '../../src/scan/services/file-scan.service';
+import { ScanVerdictPublisherService } from '../../src/scan/services/scan-verdict-publisher.service';
 import { ClamdScanEngineService } from '../../src/scanning/clamd-scan-engine.service';
 import { createClamdSocket } from '../../src/scanning/clamd-socket';
 import { EngineHealthService } from '../../src/scanning/engine-health.service';
@@ -178,6 +187,128 @@ function slowBytes(total: number, pauseMs: number): Readable {
  */
 function pause(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** One heartbeat row, as the heartbeat service wrote it. */
+interface RecordedBeat {
+  readonly state: unknown;
+  readonly pauseReason: unknown;
+}
+
+/** A processor and its heartbeat, watching the rehearsal's scanner. */
+interface Watch {
+  /** The health poll the processor pauses and resumes on. */
+  readonly health: EngineHealthService;
+  /** The heartbeat the processor started. */
+  readonly heartbeat: WorkerHeartbeatService;
+  /** Every row the heartbeat wrote, in order. */
+  readonly beats: RecordedBeat[];
+}
+
+/**
+ * Starts the real processor and heartbeat against the rehearsal's scanner.
+ *
+ * Only the two things this rehearsal has no container for are stood in for:
+ * the BullMQ worker the processor pauses, which here is a flag, and the
+ * database the heartbeat writes to, which here records each row. Everything
+ * that decides what the row says — the health poll, the processor's pause
+ * and the heartbeat's reading of both — is the code the worker runs.
+ *
+ * @returns What is watching.
+ */
+async function watchTheHeartbeat(): Promise<Watch> {
+  const beats: RecordedBeat[] = [];
+  const watched = settings({
+    healthPollMs: 1_000,
+    workerHeartbeatIntervalMs: 60_000,
+    schemaVersion: 2,
+  });
+  const health = new EngineHealthService(engine(), watched);
+  const heartbeat = new WorkerHeartbeatService(
+    {
+      query: (sql: string, parameters: unknown[] = []): Promise<void> => {
+        if (sql === HEARTBEAT_UPSERT) {
+          beats.push({ state: parameters[1], pauseReason: parameters[2] });
+        }
+
+        return Promise.resolve();
+      },
+    } as unknown as DataSource,
+    health,
+    watched,
+  );
+  const processor = new FileScanProcessor(
+    {} as FileScanService,
+    {} as ScanVerdictPublisherService,
+    health,
+    watched,
+    heartbeat,
+  );
+  let paused = false;
+
+  Object.defineProperty(processor, 'worker', {
+    value: {
+      isPaused: (): boolean => paused,
+      pause: (): Promise<void> => {
+        paused = true;
+
+        return Promise.resolve();
+      },
+      resume: (): Promise<void> => {
+        paused = false;
+
+        return Promise.resolve();
+      },
+    },
+  });
+
+  await health.onModuleInit();
+  processor.onApplicationBootstrap();
+  await heartbeat.beat();
+
+  return { health, heartbeat, beats };
+}
+
+/**
+ * Waits until the health poll gives the answer wanted.
+ *
+ * @param health - The health poll.
+ * @param healthy - The answer to wait for.
+ * @returns Whether it came before the limit.
+ */
+async function waitForHealth(
+  health: EngineHealthService,
+  healthy: boolean,
+): Promise<boolean> {
+  const started = Date.now();
+
+  while (health.current().healthy !== healthy) {
+    if (Date.now() - started > 30_000) {
+      return false;
+    }
+
+    await pause(250);
+  }
+
+  // The heartbeat beats on the same change, just after the processor; give
+  // that write its turn before reading it back.
+  await pause(250);
+
+  return true;
+}
+
+/**
+ * Describes the last row the heartbeat wrote.
+ *
+ * @param watch - What is watching.
+ * @returns The state and reason, for the log.
+ */
+function lastBeat(watch: Watch): string {
+  const beat = watch.beats[watch.beats.length - 1] as RecordedBeat | undefined;
+
+  return beat === undefined
+    ? 'no row written'
+    : `${String(beat.state)} (${String(beat.pauseReason)})`;
 }
 
 /**
@@ -405,6 +536,11 @@ async function judgesTheScanner(): Promise<void> {
  * container's by FC-052. This is the scanner going from under a scan that is
  * part way through: the socket closes on a client still writing, and the only
  * acceptable reading of that is "not answered", which the worker retries.
+ *
+ * The heartbeat is watched through the same restart (FC-042). A paused worker
+ * looks exactly like an idle one from outside, so the row the backend reads
+ * has to say paused, with the reason as a code, for as long as the scanner is
+ * gone, and running again once it is back.
  */
 async function survivesARestart(): Promise<void> {
   console.log('\n=== What happens when the scanner restarts mid-scan ===');
@@ -414,6 +550,13 @@ async function survivesARestart(): Promise<void> {
       'REHEARSAL_CLAMAV_CONTAINER is not set; run this through npm run rehearse:scan',
     );
   }
+
+  const watch = await watchTheHeartbeat();
+  check(
+    'the heartbeat says running while the scanner is fit',
+    lastBeat(watch) === 'RUNNING (null)',
+    lastBeat(watch),
+  );
 
   // 32 MiB, inside the stream limit, at a pace that takes about ten seconds:
   // long enough to be certainly in flight when the restart lands, and short
@@ -437,9 +580,33 @@ async function survivesARestart(): Promise<void> {
     interrupted.outcome,
   );
 
+  // The poll notices within a second; the reload takes far longer, so the
+  // worker is certainly still paused when this reads the row.
+  const noticed = await waitForHealth(watch.health, false);
+  check(
+    'while the scanner is gone, the heartbeat says paused, and why',
+    noticed && lastBeat(watch) === 'PAUSED (SCANNER_UNREACHABLE)',
+    lastBeat(watch),
+  );
+
   const tookMs = await waitForTheScanner();
   console.log(
     `  The scanner answered again after ${Math.round(tookMs / 1000)}s`,
+  );
+
+  const recovered = await waitForHealth(watch.health, true);
+  check(
+    'once it is back, the heartbeat says running again',
+    recovered && lastBeat(watch) === 'RUNNING (null)',
+    lastBeat(watch),
+  );
+
+  watch.health.onModuleDestroy();
+  await watch.heartbeat.beforeApplicationShutdown();
+  check(
+    'and says stopping on the way out',
+    lastBeat(watch) === 'STOPPING (null)',
+    lastBeat(watch),
   );
 
   const after = await engine().scan(Readable.from([CSV]));

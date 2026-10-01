@@ -10,6 +10,10 @@ import {
   parseScanRequestMessage,
 } from '../../contract/file-scan-contract';
 import {
+  WorkerActivity,
+  WorkerHeartbeatService,
+} from '../../heartbeat/worker-heartbeat.service';
+import {
   EngineHealth,
   EngineHealthService,
   EngineUnfitError,
@@ -53,6 +57,11 @@ export const LEASE_LAPSE_MARGIN_MS = 5_000;
  * delayed rather than failed, because failing it five times is how a queue
  * empties itself into a failed set during an outage that ends on its own —
  * ADR-0020.
+ *
+ * **What it is doing is written down where the backend can see it.** Render
+ * never probes a background worker, so a paused worker looks exactly like an
+ * idle one. The processor starts the heartbeat, which reports whether it is
+ * paused and how many jobs it holds — FC-042.
  */
 // Concurrency is read straight from the environment because a decorator is
 // evaluated when the class is defined, long before anything is injected. The
@@ -63,9 +72,11 @@ export const LEASE_LAPSE_MARGIN_MS = 5_000;
 })
 export class FileScanProcessor
   extends WorkerHost
-  implements OnApplicationBootstrap
+  implements OnApplicationBootstrap, WorkerActivity
 {
   private readonly _logger = new Logger(FileScanProcessor.name);
+
+  private _jobsInHand = 0;
 
   /**
    * Creates an instance of FileScanProcessor.
@@ -74,12 +85,14 @@ export class FileScanProcessor
    * @param _publisher - The verdict queue.
    * @param _health - What the scanner last said about itself.
    * @param _settings - The worker's settings.
+   * @param _heartbeat - The row that says what this worker is doing.
    */
   constructor(
     private readonly _fileScan: FileScanService,
     private readonly _publisher: ScanVerdictPublisherService,
     private readonly _health: EngineHealthService,
     @Inject(WORKER_SETTINGS) private readonly _settings: WorkerSettings,
+    private readonly _heartbeat: WorkerHeartbeatService,
   ) {
     super();
   }
@@ -92,6 +105,9 @@ export class FileScanProcessor
    * worker whose scanner is still loading its signatures therefore starts
    * paused, which is the correct way round: it consumes nothing until it can
    * answer for what it consumes.
+   *
+   * The heartbeat starts last, so its first row already says paused when
+   * the worker starts paused, and its health listener runs after this one.
    */
   onApplicationBootstrap(): void {
     this._health.onChange(health => {
@@ -99,6 +115,42 @@ export class FileScanProcessor
     });
 
     this.tryToMatchQueueTo(this._health.current());
+
+    this._heartbeat.start(this);
+  }
+
+  /**
+   * Reports whether this worker has stopped taking scan requests.
+   *
+   * @returns True while consumption is paused.
+   */
+  isPaused(): boolean {
+    return this.worker.isPaused();
+  }
+
+  /**
+   * Reports how many jobs this worker is working on.
+   *
+   * @returns The number of jobs in hand.
+   */
+  jobsInHand(): number {
+    return this._jobsInHand;
+  }
+
+  /**
+   * Handles one job, counting it as in hand while it does.
+   *
+   * @param job - The job.
+   * @param token - The lock this worker holds the job by.
+   */
+  async process(job: Job<unknown>, token?: string): Promise<void> {
+    this._jobsInHand += 1;
+
+    try {
+      await this.handle(job, token);
+    } finally {
+      this._jobsInHand -= 1;
+    }
   }
 
   /**
@@ -107,7 +159,7 @@ export class FileScanProcessor
    * @param job - The job.
    * @param token - The lock this worker holds the job by.
    */
-  async process(job: Job<unknown>, token?: string): Promise<void> {
+  private async handle(job: Job<unknown>, token?: string): Promise<void> {
     let request;
 
     try {

@@ -54,10 +54,29 @@ export class EngineUnfitError extends Error {
   }
 }
 
+/**
+ * Every reason a scanner can be unfit, by the short code the worker's
+ * heartbeat reports it as.
+ *
+ * The codes are what leaves this process: the heartbeat row shows the backend
+ * `SIGNATURES_TOO_OLD` rather than a sentence, so the sentence can change
+ * without changing what the backend reads, and nothing free-text ever lands
+ * in a column an administrator is shown (FC-042).
+ */
+export const ENGINE_UNFIT_REASONS = {
+  SCANNER_NOT_ASKED: 'The scanner has not been asked yet',
+  SCANNER_UNREACHABLE: 'The scanner cannot be reached',
+  SIGNATURES_UNDATED: 'The scanner did not say how old its signatures are',
+  SIGNATURES_TOO_OLD: 'The signature database is older than the policy allows',
+} as const;
+
+/** The short code for a reason a scanner is unfit. */
+export type EngineUnfitCode = keyof typeof ENGINE_UNFIT_REASONS;
+
 /** What is reported before the scanner has ever been asked. */
 const UNASKED: EngineHealth = {
   healthy: false,
-  reason: 'The scanner has not been asked yet',
+  reason: ENGINE_UNFIT_REASONS.SCANNER_NOT_ASKED,
   description: null,
   checkedAt: new Date(0),
 };
@@ -186,7 +205,7 @@ export class EngineHealthService implements OnModuleInit, OnModuleDestroy {
     } catch {
       return this.record({
         healthy: false,
-        reason: 'The scanner cannot be reached',
+        reason: ENGINE_UNFIT_REASONS.SCANNER_UNREACHABLE,
         description: null,
         checkedAt: new Date(),
       });
@@ -212,7 +231,7 @@ export class EngineHealthService implements OnModuleInit, OnModuleDestroy {
     if (description.definitionsBuiltAt === null) {
       return {
         healthy: false,
-        reason: 'The scanner did not say how old its signatures are',
+        reason: ENGINE_UNFIT_REASONS.SIGNATURES_UNDATED,
       };
     }
 
@@ -221,7 +240,7 @@ export class EngineHealthService implements OnModuleInit, OnModuleDestroy {
     if (age > this._settings.maxDefinitionAgeMs) {
       return {
         healthy: false,
-        reason: 'The signature database is older than the policy allows',
+        reason: ENGINE_UNFIT_REASONS.SIGNATURES_TOO_OLD,
       };
     }
 
