@@ -73,13 +73,11 @@ updates grouped into a single PR per ecosystem.
 
 ## Known Dependency Advisory Follow-up
 
-The production audit gate (`npm audit --audit-level=high --omit=dev`) passes
-with **zero advisories at or above high severity** (last verified 2026-09-19).
-One low-severity advisory is outstanding in the production tree and one
-moderate plus two high advisories in the development-only tree; all four have
-fixes available upstream and are tracked by Dependabot rather than pinned here.
+Both the full dependency audit (`npm audit`) and the production audit gate
+(`npm audit --audit-level=high --omit=dev`) pass with **zero advisories at any
+severity** (last verified 2026-10-06).
 
-This repository carries a single override:
+This repository carries two overrides:
 
 - `qs` → `^6.16.0`, remediating
   [GHSA-q8mj-m7cp-5q26](https://github.com/advisories/GHSA-q8mj-m7cp-5q26),
@@ -87,8 +85,43 @@ This repository carries a single override:
   [GHSA-4mjr-xmp4-gh2g](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g).
   `typed-rest-client@2.3.1` (via `@stryker-mutator/core`) exact-pins
   `qs@6.15.1`; the global override keeps the tree on `6.16.0`, the first
-  release patched against all three. This matches the backend's single
-  override exactly.
+  release patched against all three. This matches the backend's override
+  exactly. Re-checked 2026-10-06: `typed-rest-client@3.1.2` has moved to
+  `qs@^6.16.0`, but `@stryker-mutator/core@10.0.0` still pins `~2.3.0`, so the
+  override stays until Stryker takes `typed-rest-client@3`.
+- `argparse` → `^2.0.1`, remediating
+  [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c)
+  (`sprintf-js`, development tree only). Every published `sprintf-js` release is
+  affected, so no pin can help; the only consumer is `argparse@1`, reached
+  through `ts-jest` → `@jest/transform` → `babel-plugin-istanbul` →
+  `@istanbuljs/load-nyc-config@1.1.0` → `js-yaml@3`. `argparse@2` dropped
+  `sprintf-js`, and `js-yaml@3` only requires `argparse` from its `bin/js-yaml.js`
+  CLI, which nothing in this project runs — the library code in `lib/` never
+  loads it. The override therefore removes `sprintf-js` from the tree without
+  changing any code path that runs. Remove it when
+  `@istanbuljs/load-nyc-config` publishes a release on `js-yaml@4`
+  (`npm view @istanbuljs/load-nyc-config@latest dependencies.js-yaml`).
+
+### TypeScript stays on `^6.0.3` (2026-10-06)
+
+Dependabot bumped `typescript` to `7.0.2` on 2026-09-21. The CI pipeline is
+skipped on Dependabot PRs, so nothing caught that `nest build` fails outright
+under it:
+
+```
+Error  The installed TypeScript version (7.0.2) does not expose the programmatic
+compiler API that the Nest CLI requires. TypeScript 7.0 ships the "tsc"
+executable only; the compiler API is expected to return in 7.1.
+```
+
+`ts-jest@29.4.14` also declares `peerDependencies.typescript` as `>=4.3 <7`.
+The pin was reverted to `^6.0.3`, matching the backend and frontend. Retry when
+`@nestjs/cli` depends on a TypeScript 7 compiler and `ts-jest` admits it:
+
+```sh
+npm view @nestjs/cli@latest dependencies.typescript
+npm view ts-jest@latest peerDependencies.typescript
+```
 
 Eleven further overrides (`@babel/core`, `diff`, `form-data`, `handlebars`,
 `js-yaml`, `lodash`, `multer`, `path-to-regexp`, `picomatch`,

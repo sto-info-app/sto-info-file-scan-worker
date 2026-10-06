@@ -47,7 +47,7 @@ Documentation is in [docs/](docs/).
   wired up, and where to look when a check fails.
 
 The security *policy* — reporting a vulnerability, supported versions, the
-dependency override this repository carries — is in [SECURITY.md](SECURITY.md).
+dependency overrides this repository carries — is in [SECURITY.md](SECURITY.md).
 
 ## Getting Started
 
