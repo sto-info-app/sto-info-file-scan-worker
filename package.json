@@ -1,6 +1,6 @@
 {
   "name": "sto-info-file-scan-worker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Star Trek Online Information - File scan worker (type validation + AV scanning) using NestJS, BullMQ, TypeORM and Cloudflare R2.",
   "author": "Steve Roberts",
   "private": true,
