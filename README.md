@@ -156,8 +156,8 @@ clamd never reports — a member inflated past `MaxFileSize` is read only up
 to the limit — which the backend closes by re-encoding every picture.
 And it reloads the signatures while a scan is streaming: the scan, and the
 ones after it, must still judge correctly.
-FC-043's acceptance evidence, which these results feed, is the backend's
-[docs/release/fc-043-acceptance.md](../sto-info-backend/docs/release/fc-043-acceptance.md).
+FC-043's acceptance evidence, which these results feed, is kept with the
+Fleet Community plans.
 
 `rehearse:scan` builds its scanner on the public ClamAV image by default.
 Point it at this repository's own image to rehearse the exact container
