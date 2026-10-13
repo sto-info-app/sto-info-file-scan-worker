@@ -118,7 +118,7 @@ describe('MeasuredStream', () => {
     it('stops at the sniffing limit however much arrives', async () => {
       const { measured } = await pass([Buffer.alloc(900, 0xab)], 4096);
 
-      expect(measured.prefix.length).toBe(SNIFF_PREFIX_BYTES);
+      expect(measured.prefix).toHaveLength(SNIFF_PREFIX_BYTES);
     });
 
     it('stops collecting once it has enough', async () => {
@@ -127,7 +127,7 @@ describe('MeasuredStream', () => {
         4096,
       );
 
-      expect(measured.prefix.length).toBe(SNIFF_PREFIX_BYTES);
+      expect(measured.prefix).toHaveLength(SNIFF_PREFIX_BYTES);
       expect(measured.prefix.every(byte => byte === 1)).toBe(true);
     });
   });

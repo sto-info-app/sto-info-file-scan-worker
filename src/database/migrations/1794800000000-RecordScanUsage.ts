@@ -178,7 +178,7 @@ export class RecordScanUsage1794800000000 implements MigrationInterface {
 }
 
 /** A PostgreSQL role name this migration is prepared to quote. */
-const ROLE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+const ROLE_NAME = /^[A-Za-z_]\w{0,62}$/;
 
 /**
  * Reads the backend's database role.

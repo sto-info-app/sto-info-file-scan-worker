@@ -181,7 +181,8 @@ export class ClamdScanEngineService implements ScanEngine {
     const engineVersion =
       engineField?.replace(/^ClamAV\s*/i, '').trim() || null;
     const signatureVersion = signatureField?.trim() || null;
-    const builtAt = builtField === undefined ? NaN : Date.parse(builtField);
+    const builtAt =
+      builtField === undefined ? Number.NaN : Date.parse(builtField);
 
     return {
       engine: ENGINE_NAME,
