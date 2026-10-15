@@ -11,7 +11,8 @@ budgets, readiness and heartbeats, signatures, alerts, failed jobs, restore, rol
 
 The `sto-info-file-scan-worker` is hosted on Render.com as a **Background
 Worker** service, built from this repository's `Dockerfile`. The service is
-declared in [`render.yaml`](../render.yaml).
+declared in [`render/production.yaml`](../render/production.yaml); `render/development.yaml` and
+`render/staging.yaml` describe the Development and Staging projects the same way.
 
 - **Type**: Background Worker
 - **Runtime**: Docker (`./Dockerfile`)
@@ -47,7 +48,7 @@ landed.
 ### Environment Variables in Render
 
 All variables from `config/environments/.env.example` must be configured in
-Render's environment settings. `render.yaml` fixes the ones that are the
+Render's environment settings. The project's blueprint under `render/` fixes the ones that are the
 same everywhere and marks the rest `sync: false`.
 
 There is no `DB_PASSWORD`: the database password and the quarantine keys

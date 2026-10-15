@@ -1,4 +1,7 @@
-# The worker as Render runs it.
+# The worker as Render runs it, in the STO Info Production project. A Blueprint
+# instance reads this file from the production branch, with its path given in
+# the dashboard's Blueprint Path field; render/development.yaml and
+# render/staging.yaml describe the other projects.
 #
 # A background worker on the Docker runtime, in Frankfurt. Three choices are
 # recorded here and argued in ADR-0020.
