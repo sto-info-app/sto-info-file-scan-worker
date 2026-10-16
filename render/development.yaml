@@ -11,6 +11,10 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
+    # The smallest plan with 2 GB of memory, which clamd needs with its
+    # signatures loaded; on 512 MB the container is killed without a word a
+    # few minutes after clamd starts.
+    plan: standard
     branch: development
     # Deployed by hand, after the backend: its first migration needs the
     # backend's tables.
@@ -64,8 +68,9 @@ services:
 
       - key: CLOUDFLARE_R2_ENDPOINT
         sync: false
+      # The same bucket serves every environment, keyed by NODE_ENV.
       - key: CLOUDFLARE_R2_QUARANTINE_BUCKET_NAME
-        sync: false
+        value: stoi-quarantine
 
       # Its own secret: the worker role's password and the read-only
       # quarantine token.

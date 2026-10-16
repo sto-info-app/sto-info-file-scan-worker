@@ -28,9 +28,10 @@
 # through a signature reload rather than the 2,022 MiB a concurrent reload
 # costs. The numbers and the trade are in ADR-0020.
 #
-# `plan` is deliberately not written below: Render's plan names change, and
-# a wrong one here fails a deploy rather than a review. Set it in the
-# dashboard to the smallest plan with 2 GB of memory.
+# `plan` is written below as `standard`, Render's name for 1 CPU and 2 GB.
+# Left out, a blueprint gives a worker 512 MB, on which the staging worker
+# was killed without a word a few minutes after clamd started. If Render
+# renames the plan the sync fails loudly, which is the better failure.
 
 services:
   - type: worker
@@ -38,6 +39,10 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
+    # The smallest plan with 2 GB of memory, which clamd needs with its
+    # signatures loaded; on 512 MB the container is killed without a word a
+    # few minutes after clamd starts.
+    plan: standard
     branch: production
     autoDeploy: false
     envVars:
@@ -101,8 +106,9 @@ services:
         sync: false
       - key: CLOUDFLARE_R2_ENDPOINT
         sync: false
+      # The same bucket serves every environment, keyed by NODE_ENV.
       - key: CLOUDFLARE_R2_QUARANTINE_BUCKET_NAME
-        sync: false
+        value: stoi-quarantine
       - key: REDIS_URL
         sync: false
       - key: DB_HOST
