@@ -29,6 +29,17 @@ services:
         value: 2
       - key: DB_SCHEMA
         value: sto_info_worker
+      # Required by the worker's configuration check, which refuses to start
+      # without them: the health probes' port, the only database kind, and
+      # whether the database's certificate is verified, which must match
+      # what the backend uses against the same instance, so it is copied
+      # from the backend's service.
+      - key: APP_PORT
+        value: 3000
+      - key: DB_TYPE
+        value: postgres
+      - key: DB_SSL_REJECT_UNAUTHORIZED
+        sync: false
       - key: TYPEORM_SYNCHRONIZE
         value: false
       - key: SCAN_CONCURRENCY
