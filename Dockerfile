@@ -113,6 +113,9 @@ COPY config ./config
 COPY src/database/migrations ./src/database/migrations
 COPY src/config ./src/config
 COPY src/contract ./src/contract
+# The migration runner reads the database password from the AWS secret
+# through this service, so the source it compiles from has to be here too.
+COPY src/shared/secrets ./src/shared/secrets
 
 # The health endpoint, for a human and for whatever this is deployed as. A
 # Render background worker probes nothing, so nothing depends on this being
