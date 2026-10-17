@@ -238,10 +238,7 @@ describe('FileScanService', () => {
     it('reads the object the message named and no other', async () => {
       await service.scan(request(), REQUESTED_AT);
 
-      expect(quarantine.getStream).toHaveBeenCalledWith(
-        request().objectKey,
-        null,
-      );
+      expect(quarantine.getStream).toHaveBeenCalledWith(request().objectKey);
     });
 
     it('reads what the scanner is before it claims anything', async () => {

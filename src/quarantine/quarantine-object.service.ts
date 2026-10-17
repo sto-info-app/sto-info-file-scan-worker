@@ -68,22 +68,26 @@ export class QuarantineObjectService {
   /**
    * Opens a stream of an object's bytes.
    *
+   * By key alone, never by version. R2 does not implement object versioning
+   * and refuses a `GetObject` that names one with "versionId not
+   * implemented", even for the id its own `PutObject` has returned since
+   * October 2026. The first staging roster import (17 October 2026) failed
+   * every scan that way, with the registry's recorded version passed here.
+   * The registry no longer records one; this reads by key whatever a message
+   * carries. The key is never reused, so what is under it is what was
+   * uploaded, and the SHA-256 the message names is checked against the bytes.
+   *
    * @param objectKey - The key, taken from the registry's own record.
-   * @param objectVersion - The store's version, when it has one.
    * @returns The object's bytes.
    * @throws QuarantineObjectMissingError when there is no such object.
    * @throws Error when the store could not be reached.
    */
-  async getStream(
-    objectKey: string,
-    objectVersion: string | null,
-  ): Promise<Readable> {
+  async getStream(objectKey: string): Promise<Readable> {
     try {
       const response = await this._s3Client.send(
         new GetObjectCommand({
           Bucket: this._settings.quarantineBucket,
           Key: objectKey,
-          ...(objectVersion === null ? {} : { VersionId: objectVersion }),
         }),
       );
 

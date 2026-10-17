@@ -29,10 +29,10 @@ offering to revert migrations whose files it does not have.
 
 Separate schemas settle both problems for the price of a grant:
 
-| | Schema | Migration table | Migrated by |
-| --- | --- | --- | --- |
-| Asset registry, Fleet domain | `sto_info_app` | `sto_info_app._migrations` | backend |
-| Scan attempts | `sto_info_worker` | `sto_info_worker._migrations` | this repository |
+|                              | Schema            | Migration table               | Migrated by     |
+| ---------------------------- | ----------------- | ----------------------------- | --------------- |
+| Asset registry, Fleet domain | `sto_info_app`    | `sto_info_app._migrations`    | backend         |
+| Scan attempts                | `sto_info_worker` | `sto_info_worker._migrations` | this repository |
 
 `DB_SCHEMA` must be `sto_info_worker`. The migrations name the schema in
 their SQL, so a datasource pointed anywhere else would create the table in
@@ -59,15 +59,15 @@ absence rather than as a rule.
 
 ### Identity and the request
 
-| Column | Notes |
-| --- | --- |
-| `id` | The attempt, carried in the verdict. |
-| `assetId` | Foreign key to `sto_info_app.file_asset`, `ON DELETE RESTRICT`. On PostgreSQL 18 a delete it blocks raises SQLSTATE `23001`, not `23503`. |
-| `objectKey`, `objectVersion` | Where the bytes were. The version is null on R2. |
-| `expectedSha256` | What the registry recorded when the bytes were stored. |
-| `policyVersion`, `definitionEpoch` | Which policy and which signatures. |
-| `campaignId`, `traceId` | Which rescan, and which upload to follow it by. |
-| `requestedAt` | When the backend queued the request, from the job's own timestamp. Null on attempts made before FC-003 recorded it. |
+| Column                             | Notes                                                                                                                                     |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                               | The attempt, carried in the verdict.                                                                                                      |
+| `assetId`                          | Foreign key to `sto_info_app.file_asset`, `ON DELETE RESTRICT`. On PostgreSQL 18 a delete it blocks raises SQLSTATE `23001`, not `23503`. |
+| `objectKey`, `objectVersion`       | Where the bytes were. The version is null on R2.                                                                                          |
+| `expectedSha256`                   | What the registry recorded when the bytes were stored.                                                                                    |
+| `policyVersion`, `definitionEpoch` | Which policy and which signatures.                                                                                                        |
+| `campaignId`, `traceId`            | Which rescan, and which upload to follow it by.                                                                                           |
+| `requestedAt`                      | When the backend queued the request, from the job's own timestamp. Null on attempts made before FC-003 recorded it.                       |
 
 All of these are write-once. `TR_file_scan_attempt_guard` refuses a change to
 any of them at any point in the attempt's life, because they are the
@@ -75,14 +75,14 @@ question, not the answer.
 
 ### The answer
 
-| Column | Notes |
-| --- | --- |
-| `state` | Where the attempt got to. |
-| `observedSha256` | The hash of what was actually read. |
-| `byteSize`, `detectedContentType` | What was read, and what it looked like. |
-| `rejectionCode`, `failureReason` | Why it refused. **Administrator-only.** |
-| `engine`, `engineVersion`, `signatureVersion` | Which scanner answered. |
-| `definitionsBuiltAt` | When its signature database was built, as `clamd` reported it, or null when it did not say. |
+| Column                                        | Notes                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `state`                                       | Where the attempt got to.                                                                   |
+| `observedSha256`                              | The hash of what was actually read.                                                         |
+| `byteSize`, `detectedContentType`             | What was read, and what it looked like.                                                     |
+| `rejectionCode`, `failureReason`              | Why it refused. **Administrator-only.**                                                     |
+| `engine`, `engineVersion`, `signatureVersion` | Which scanner answered.                                                                     |
+| `definitionsBuiltAt`                          | When its signature database was built, as `clamd` reported it, or null when it did not say. |
 
 A finished attempt is evidence, and the same trigger refuses every change to
 a terminal row. The one exception is `verdictPublishedAt`, which may be set
@@ -100,11 +100,11 @@ trigger enforces the shape. `CLEAN` and `REJECTED` stay final.
 
 ### The lease
 
-| Column | Notes |
-| --- | --- |
-| `attemptCount` | How many times this attempt has been claimed. |
-| `leaseToken`, `leaseExpiresAt` | Who holds it, and until when. |
-| `heartbeatAt` | When the holder last said it was still working. |
+| Column                         | Notes                                           |
+| ------------------------------ | ----------------------------------------------- |
+| `attemptCount`                 | How many times this attempt has been claimed.   |
+| `leaseToken`, `leaseExpiresAt` | Who holds it, and until when.                   |
+| `heartbeatAt`                  | When the holder last said it was still working. |
 
 BullMQ has its own lock and it is not enough on its own: a lock says which
 worker may process a job, not whose answer the database will accept. A worker
@@ -127,12 +127,12 @@ reads two views instead, which carry only totals:
 - **`scan_engine_status`** has one row: the engine, versions and signature
   build time the latest attempt reported.
 
-| Term | Meaning |
-| --- | --- |
-| Re-scan | An attempt that belongs to a campaign, or any attempt for an asset that already had one. |
-| Retry | A claim beyond the first; an attempt claimed three times holds two. |
-| Scan time | From the scanner getting the bytes to the answer. |
-| Wait | From the request being queued (`requestedAt`) to the answer. |
+| Term      | Meaning                                                                                  |
+| --------- | ---------------------------------------------------------------------------------------- |
+| Re-scan   | An attempt that belongs to a campaign, or any attempt for an asset that already had one. |
+| Retry     | A claim beyond the first; an attempt claimed three times holds two.                      |
+| Scan time | From the scanner getting the bytes to the answer.                                        |
+| Wait      | From the request being queued (`requestedAt`) to the answer.                             |
 
 The views are the contract, so the table can change underneath them. They
 are granted to the role named by `BACKEND_DB_ROLE` when the migration runs,
@@ -144,7 +144,9 @@ and the migration refuses to run without it.
   `(assetId, objectVersion, policyVersion, definitionEpoch)`, which is
   ADR-0006 decision 4 written as a constraint. It is declared
   `UNIQUE NULLS NOT DISTINCT`, and that is load-bearing: R2 has no object
-  versioning, so every `objectVersion` here is null, and under PostgreSQL's
+  versioning (the id its `PutObject` returns cannot be read by, so the
+  backend records none), so every `objectVersion` here is null, and under
+  PostgreSQL's
   default two nulls differ from each other. A plain `UNIQUE` would have
   matched nothing at all and every duplicate delivery would have inserted a
   second attempt — while looking, in the migration, exactly like this one.
@@ -162,16 +164,16 @@ Render never probes a background worker, so a worker that has paused itself
 because its scanner is unfit looks exactly like one with nothing to do; this
 row is how anyone outside the process tells them apart.
 
-| Column | Notes |
-| --- | --- |
-| `workerId` | The process: host name, pid and a random suffix, made at start. Primary key. |
-| `state` | `RUNNING`, `PAUSED` or `STOPPING`. |
-| `pauseReason` | Why it is paused, as a short upper-case code, or null. Only a paused row may have one. |
-| `definitionsVersion`, `definitionsBuiltAt` | The signatures `clamd` last reported, or null while it is not answering. |
-| `jobsInHand` | How many jobs the process is working on. Never negative. |
-| `startedAt` | When the process started, by its own clock. |
-| `beatAt` | When it last wrote the row, by the database's clock. |
-| `pausedSince` | When the current pause began, by the database's clock. Set exactly when `state` is `PAUSED`. |
+| Column                                     | Notes                                                                                        |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `workerId`                                 | The process: host name, pid and a random suffix, made at start. Primary key.                 |
+| `state`                                    | `RUNNING`, `PAUSED` or `STOPPING`.                                                           |
+| `pauseReason`                              | Why it is paused, as a short upper-case code, or null. Only a paused row may have one.       |
+| `definitionsVersion`, `definitionsBuiltAt` | The signatures `clamd` last reported, or null while it is not answering.                     |
+| `jobsInHand`                               | How many jobs the process is working on. Never negative.                                     |
+| `startedAt`                                | When the process started, by its own clock.                                                  |
+| `beatAt`                                   | When it last wrote the row, by the database's clock.                                         |
+| `pausedSince`                              | When the current pause began, by the database's clock. Set exactly when `state` is `PAUSED`. |
 
 Each process upserts its row on start, every `WORKER_HEARTBEAT_INTERVAL_MS`,
 whenever the scanner's health changes and once more as `STOPPING` on the way

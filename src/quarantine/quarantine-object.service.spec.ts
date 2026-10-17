@@ -34,7 +34,7 @@ describe('QuarantineObjectService', () => {
     it('reads from the bucket its own configuration names', async () => {
       // The first acceptance criterion. The key comes from the message; the
       // bucket never does, so no message can point this anywhere else.
-      await service.getStream(OBJECT_KEY, null);
+      await service.getStream(OBJECT_KEY);
 
       const [[command]] = send.mock.calls as [[GetObjectCommand]];
 
@@ -44,26 +44,20 @@ describe('QuarantineObjectService', () => {
       });
     });
 
-    it('omits the version entirely when there is none', async () => {
-      await service.getStream(OBJECT_KEY, null);
+    /**
+     * R2 refuses a read that names a version, including the id its own
+     * `PutObject` returns, so none is ever sent (17 October 2026).
+     */
+    it('never asks for a version', async () => {
+      await service.getStream(OBJECT_KEY);
 
       const [[command]] = send.mock.calls as [[GetObjectCommand]];
 
       expect(command.input).not.toHaveProperty('VersionId');
     });
 
-    it('asks for a version when the store has one', async () => {
-      await service.getStream(OBJECT_KEY, 'v7');
-
-      const [[command]] = send.mock.calls as [[GetObjectCommand]];
-
-      expect(command.input).toEqual(
-        expect.objectContaining({ VersionId: 'v7' }),
-      );
-    });
-
     it('hands back the body as a stream', async () => {
-      const stream = await service.getStream(OBJECT_KEY, null);
+      const stream = await service.getStream(OBJECT_KEY);
       const chunks: Buffer[] = [];
 
       for await (const chunk of stream) {
@@ -93,7 +87,7 @@ describe('QuarantineObjectService', () => {
     ])('refuses on %s', async (_description, thrown) => {
       send.mockImplementationOnce(() => Promise.reject(thrown));
 
-      await expect(service.getStream(OBJECT_KEY, null)).rejects.toBeInstanceOf(
+      await expect(service.getStream(OBJECT_KEY)).rejects.toBeInstanceOf(
         QuarantineObjectMissingError,
       );
     });
@@ -101,7 +95,7 @@ describe('QuarantineObjectService', () => {
     it('refuses a response that carries no body', async () => {
       send.mockImplementationOnce(() => Promise.resolve({}));
 
-      await expect(service.getStream(OBJECT_KEY, null)).rejects.toBeInstanceOf(
+      await expect(service.getStream(OBJECT_KEY)).rejects.toBeInstanceOf(
         QuarantineObjectMissingError,
       );
     });
@@ -126,13 +120,13 @@ describe('QuarantineObjectService', () => {
 
       send.mockImplementationOnce(() => Promise.reject(outage));
 
-      await expect(service.getStream(OBJECT_KEY, null)).rejects.toBe(outage);
+      await expect(service.getStream(OBJECT_KEY)).rejects.toBe(outage);
     });
 
     it('lets a thrown non-error through', async () => {
       send.mockImplementationOnce(() => Promise.reject('nope'));
 
-      await expect(service.getStream(OBJECT_KEY, null)).rejects.toBe('nope');
+      await expect(service.getStream(OBJECT_KEY)).rejects.toBe('nope');
     });
   });
 });

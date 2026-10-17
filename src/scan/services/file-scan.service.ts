@@ -214,10 +214,7 @@ export class FileScanService {
     const beating = this.startHeartbeat(attemptId, leaseToken, measured);
 
     try {
-      const source = await this._quarantine.getStream(
-        request.objectKey,
-        request.objectVersion,
-      );
+      const source = await this._quarantine.getStream(request.objectKey);
 
       source.on('error', error => measured.destroy(error));
       source.pipe(measured);
