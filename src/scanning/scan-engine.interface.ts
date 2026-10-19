@@ -96,6 +96,13 @@ export interface ScanEngine {
   describe(): Promise<ScanEngineDescription>;
 
   /**
+   * Asks the scanner to load its signature database again from disk.
+   *
+   * @throws Error when the scanner cannot be reached or will not reload.
+   */
+  reload(): Promise<void>;
+
+  /**
    * Reads a stream of bytes and says whether they are clean.
    *
    * Implementations must fail closed. Anything other than an affirmative

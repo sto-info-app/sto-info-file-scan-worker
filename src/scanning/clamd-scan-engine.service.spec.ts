@@ -224,6 +224,40 @@ describe('ClamdScanEngineService', () => {
     });
   });
 
+  describe('reloading its signatures', () => {
+    it('sends the null-terminated form of the command and accepts RELOADING', async () => {
+      const engine = engineWith(socket);
+      const answer = engine.reload();
+
+      socket.emit('connect');
+      socket.emit('data', Buffer.from('RELOADING\0', 'utf8'));
+
+      await expect(answer).resolves.toBeUndefined();
+      expect(socket.written[0].toString('ascii')).toBe('zRELOAD\0');
+    });
+
+    it('fails when the scanner answers anything else', async () => {
+      const engine = engineWith(socket);
+      const answer = engine.reload();
+
+      socket.emit('connect');
+      socket.emit('data', Buffer.from('UNKNOWN COMMAND\0', 'utf8'));
+
+      await expect(answer).rejects.toThrow(
+        'The scanner did not agree to reload',
+      );
+    });
+
+    it('fails when the scanner cannot be reached', async () => {
+      const engine = engineWith(socket);
+      const answer = engine.reload();
+
+      socket.emit('error', new Error('ECONNREFUSED'));
+
+      await expect(answer).rejects.toThrow('ECONNREFUSED');
+    });
+  });
+
   describe('scanning', () => {
     /**
      * Drives a scan.

@@ -8,7 +8,11 @@ import {
 } from '@jest/globals';
 
 import { WorkerSettings } from '../config/worker-settings';
-import { EngineHealth, EngineHealthService } from './engine-health.service';
+import {
+  EngineHealth,
+  EngineHealthService,
+  SIGNATURE_RELOAD_INTERVAL_MS,
+} from './engine-health.service';
 import { ScanEngine, ScanEngineDescription } from './scan-engine.interface';
 
 const MAX_DEFINITION_AGE_MS = 48 * 60 * 60 * 1000;
@@ -39,13 +43,18 @@ function description(
 
 describe('EngineHealthService', () => {
   let describeEngine: jest.Mock<() => Promise<ScanEngineDescription>>;
+  let reloadEngine: jest.Mock<() => Promise<void>>;
   let service: EngineHealthService;
 
   beforeEach(() => {
     describeEngine = jest.fn(() => Promise.resolve(description()));
+    reloadEngine = jest.fn(() => Promise.resolve());
 
     service = new EngineHealthService(
-      { describe: describeEngine } as unknown as ScanEngine,
+      {
+        describe: describeEngine,
+        reload: reloadEngine,
+      } as unknown as ScanEngine,
       SETTINGS,
     );
   });
@@ -190,6 +199,85 @@ describe('EngineHealthService', () => {
       await service.check();
 
       expect(describeEngine).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('signatures that are too old', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-19T22:00:00.000Z') });
+      describeEngine.mockImplementation(() =>
+        Promise.resolve(
+          description({
+            definitionsBuiltAt: new Date(
+              Date.now() - MAX_DEFINITION_AGE_MS - 1,
+            ),
+          }),
+        ),
+      );
+    });
+
+    it('asks the scanner to reload them, and still reports it unfit', async () => {
+      // A reload only loads what is on disk. Whether that was newer is for
+      // the next check to find out.
+      const health = await service.check();
+
+      expect(reloadEngine).toHaveBeenCalledTimes(1);
+      expect(health).toEqual(
+        expect.objectContaining({
+          healthy: false,
+          reason: 'The signature database is older than the policy allows',
+        }),
+      );
+    });
+
+    it('asks at most once an interval', async () => {
+      await service.check();
+      jest.setSystemTime(Date.now() + SIGNATURE_RELOAD_INTERVAL_MS - 1);
+      await service.check();
+
+      expect(reloadEngine).toHaveBeenCalledTimes(1);
+
+      jest.setSystemTime(Date.now() + 1);
+      await service.check();
+
+      expect(reloadEngine).toHaveBeenCalledTimes(2);
+    });
+
+    it('goes on checking when the scanner will not reload', async () => {
+      reloadEngine.mockImplementation(() =>
+        Promise.reject(new Error('The scanner did not agree to reload')),
+      );
+
+      await expect(service.check()).resolves.toEqual(
+        expect.objectContaining({ healthy: false }),
+      );
+    });
+
+    it('goes on checking whatever the scanner throws', async () => {
+      reloadEngine.mockImplementation(() => Promise.reject('no'));
+
+      await expect(service.check()).resolves.toEqual(
+        expect.objectContaining({ healthy: false }),
+      );
+    });
+
+    it('does not ask a scanner whose signatures are fresh', async () => {
+      describeEngine.mockImplementation(() => Promise.resolve(description()));
+
+      await service.check();
+
+      expect(reloadEngine).not.toHaveBeenCalled();
+    });
+
+    it('does not ask a scanner that will not date its signatures', async () => {
+      // Reloading cannot give a date to a scanner that does not report one.
+      describeEngine.mockImplementation(() =>
+        Promise.resolve(description({ definitionsBuiltAt: null })),
+      );
+
+      await service.check();
+
+      expect(reloadEngine).not.toHaveBeenCalled();
     });
   });
 
