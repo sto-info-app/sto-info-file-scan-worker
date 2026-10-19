@@ -17,7 +17,10 @@
 # unfit, and pauses its own queue until the health poll says otherwise —
 # ADR-0020. That is why there is no readiness gate in this file: the
 # application already has one, and a wait loop here would only duplicate it
-# less well.
+# less well. `freshclam` is different: it waits until `clamd` answers
+# (`docker/wait-for-clamd`), because the notice it sends after an update is
+# lost on a `clamd` that is not yet listening, and `clamd` would otherwise go
+# on with the signatures baked in below.
 
 ARG NODE_VERSION=24.21.0
 ARG S6_OVERLAY_VERSION=3.2.1.0
@@ -81,6 +84,7 @@ RUN set -eux; \
 COPY docker/clamd.conf /etc/clamav/clamd.conf
 COPY docker/freshclam.conf /etc/clamav/freshclam.conf
 COPY docker/s6-rc.d /etc/s6-overlay/s6-rc.d
+COPY docker/wait-for-clamd /usr/local/bin/wait-for-clamd
 
 # The execute bit is set here rather than relied upon from the repository.
 # It is a file mode travelling through Git on Windows, and a service script
@@ -91,7 +95,7 @@ RUN chmod +x \
   /etc/s6-overlay/s6-rc.d/freshclam/run \
   /etc/s6-overlay/s6-rc.d/migrate/up \
   /etc/s6-overlay/s6-rc.d/worker/run \
-  /etc/s6-overlay/s6-rc.d/worker/finish
+  /etc/s6-overlay/s6-rc.d/worker/finish   /usr/local/bin/wait-for-clamd
 
 # The signature database, baked in. It is roughly a gigabyte and the first
 # download takes minutes, during which the worker is unfit and scans nothing

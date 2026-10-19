@@ -1,0 +1,27 @@
+#!/bin/bash
+# Waits until clamd answers, for at most ten minutes.
+#
+# freshclam runs this before it starts. s6 counts clamd as up the moment its
+# process starts, long before it has loaded its signatures and opened its
+# socket, and freshclam's first update lands in that gap: the notice it sends
+# clamd is refused, and clamd goes on with the signatures baked into the image
+# however old they are. On tribble on 19 October 2026 that left every scan
+# paused after a deploy. Waiting for clamd's PONG means the notice arrives.
+#
+# After ten minutes it gives up waiting and lets freshclam start anyway: an
+# updater that never runs is worse than one whose first notice may be lost,
+# and the worker asks clamd to reload signatures that are too old in any case.
+
+for _ in $(seq 1 600); do
+  if (exec 3<>/dev/tcp/127.0.0.1/3310 \
+    && printf 'zPING\0' >&3 \
+    && IFS= read -r -d '' -t 5 reply <&3 \
+    && [ "$reply" = 'PONG' ]) 2>/dev/null; then
+    exit 0
+  fi
+
+  sleep 1
+done
+
+echo 'clamd did not answer within ten minutes; starting freshclam anyway' >&2
+exit 0
