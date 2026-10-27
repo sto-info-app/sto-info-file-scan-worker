@@ -13,6 +13,13 @@ We thank the following people for their contributions to this project:
                     <sub><b>Steve Roberts</b></sub>
                 </a>
             </td>
+            <td align="center">
+                <a href="https://github.com/ShadowComputers">
+                    <img src="https://avatars.githubusercontent.com/u/134551288?v=4" width="100;" alt="ShadowComputers"/>
+                    <br />
+                    <sub><b>Shadow Computers</b></sub>
+                </a>
+            </td>
 		</tr>
 	<tbody>
 </table>
