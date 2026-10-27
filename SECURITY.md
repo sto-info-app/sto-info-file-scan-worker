@@ -75,19 +75,19 @@ updates grouped into a single PR per ecosystem.
 
 Both the full dependency audit (`npm audit`) and the production audit gate
 (`npm audit --audit-level=high --omit=dev`) pass with **zero advisories at any
-severity** (last verified 2026-10-06).
+severity** (last verified 2026-10-27).
 
 This repository carries two overrides:
 
-- `qs` → `^6.16.0`, remediating
+- `qs` → `^6.17.0` (raised from `^6.16.0` on 2026-10-27), remediating
   [GHSA-q8mj-m7cp-5q26](https://github.com/advisories/GHSA-q8mj-m7cp-5q26),
   [GHSA-x5fp-wj9c-mxmx](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx) and
   [GHSA-4mjr-xmp4-gh2g](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g).
   `typed-rest-client@2.3.1` (via `@stryker-mutator/core`) exact-pins
-  `qs@6.15.1`; the global override keeps the tree on `6.16.0`, the first
-  release patched against all three. This matches the backend's override
-  exactly. Re-checked 2026-10-06: `typed-rest-client@3.1.2` has moved to
-  `qs@^6.16.0`, but `@stryker-mutator/core@10.0.0` still pins `~2.3.0`, so the
+  `qs@6.15.1`; the global override keeps the tree on a release patched
+  against all three. This matches the backend's override exactly.
+  Re-checked 2026-10-27: `typed-rest-client@3.1.2` has moved to
+  `qs@^6.16.0`, but `@stryker-mutator/core@10.1.1` still pins `~2.3.0`, so the
   override stays until Stryker takes `typed-rest-client@3`.
 - `argparse` → `^2.0.1`, remediating
   [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c)
@@ -102,7 +102,7 @@ This repository carries two overrides:
   `@istanbuljs/load-nyc-config` publishes a release on `js-yaml@4`
   (`npm view @istanbuljs/load-nyc-config@latest dependencies.js-yaml`).
 
-### TypeScript stays on `^6.0.3` (2026-10-06)
+### TypeScript stays on `~6.0.3` (re-checked 2026-10-27)
 
 Dependabot bumped `typescript` to `7.0.2` on 2026-09-21. The CI pipeline is
 skipped on Dependabot PRs, so nothing caught that `nest build` fails outright
@@ -114,14 +114,36 @@ compiler API that the Nest CLI requires. TypeScript 7.0 ships the "tsc"
 executable only; the compiler API is expected to return in 7.1.
 ```
 
-`ts-jest@29.4.14` also declares `peerDependencies.typescript` as `>=4.3 <7`.
-The pin was reverted to `^6.0.3`, matching the backend and frontend. Retry when
-`@nestjs/cli` depends on a TypeScript 7 compiler and `ts-jest` admits it:
+The 2026-10-06 revert to `^6.0.3` did not stick: Dependabot bumped it again on
+2026-10-22, and lint failed with `typescript-eslint does not support TS 7.0`.
+On 2026-10-27 the range was set to `~6.0.3` (matching the backend and
+frontend), and `.github/dependabot.yml` now ignores TypeScript majors so it
+cannot return unnoticed.
+
+Three tools gate on TypeScript 6: `@nestjs/cli@12.0.11` (bundles
+`typescript ~6.0.2`), `ts-jest@29.4.15` (peer `<7`) and
+`@typescript-eslint/parser@8.72.1` (peer `<6.1.0`). The code itself is
+ready: `tsconfig.json` no longer sets `baseUrl` or `ignoreDeprecations` (the
+`src/*` alias is an explicit `paths` entry, and the one `config/` import is
+now relative), and `npx -p typescript@7.0.2 tsc -p tsconfig.spec.json --noEmit`
+reports no errors. Retry when all three admit TypeScript 7:
 
 ```sh
 npm view @nestjs/cli@latest dependencies.typescript
 npm view ts-jest@latest peerDependencies.typescript
+npm view @typescript-eslint/parser@latest peerDependencies.typescript
 ```
+
+### Runtime and CA trust (2026-10-27)
+
+In October 2026 the private keys of eight eMudhra (emSign) intermediate
+certificates were confirmed compromised, and Node.js shipped security
+releases that distrust them and fix TLS hostname-check and Brotli flaws. The
+worker moved to **Node.js `24.22.1`** (`.nvmrc`, the `Dockerfile` `ARG`, the
+engine range and every workflow) and was rebuilt with a current Debian
+`ca-certificates`. The SonarQube scan action was raised to `v8.4.0`. See
+[docs/infrastructure.md](docs/infrastructure.md#base-image-and-certificate-trust)
+for why the image needs both changes and how to verify them.
 
 Eleven further overrides (`@babel/core`, `diff`, `form-data`, `handlebars`,
 `js-yaml`, `lodash`, `multer`, `path-to-regexp`, `picomatch`,

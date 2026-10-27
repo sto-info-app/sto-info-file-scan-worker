@@ -44,6 +44,42 @@ its cadence regardless, and `CLAMAV_MAX_DEFINITION_AGE_HOURS` refuses to
 scan with what is in the image if a deploy is old enough that no update has
 landed.
 
+### Base image and certificate trust
+
+The image builds on `node:${NODE_VERSION}-bookworm-slim`, with
+`NODE_VERSION` set by an `ARG` in the `Dockerfile` that must match `.nvmrc`
+(currently `24.22.1`). The container has two separate trust stores, and a
+certificate-authority incident has to be handled in both:
+
+- **Node.js** (the worker's calls to AWS S3, Secrets Manager and the like)
+  trusts only its own compiled-in CA list, not the OS store. The fix is a
+  Node release, made by bumping `.nvmrc`, the `Dockerfile` `ARG`, the
+  `package.json` engine range and the workflows' `NODE_VERSION` together.
+- **The OS store** (`/etc/ssl/certs`, from Debian's `ca-certificates`) is
+  what `freshclam` and `curl` use. `apt-get install ca-certificates` takes
+  the newest package from the Debian archive when the image is built, so a
+  rebuild picks up a fixed store.
+
+Render rebuilds the image on each deploy, but it only pulls a newer base
+image when the tag changes. Bumping `NODE_VERSION` therefore pulls a fresh
+base too.
+
+The October 2026 eMudhra (emSign) intermediate-key compromise was handled
+this way on 2026-10-27: Node `24.22.1`, plus a rebuild that brought in
+`ca-certificates 20250419~deb12u2`. Inside the rebuilt image, Node rejects
+both of Render's test endpoints with `CERT_REVOKED`, and `curl` rejects them
+too. To repeat the check:
+
+```bash
+docker build --pull -t worker-check .
+docker run --rm --entrypoint sh worker-check -c '
+  node -v; dpkg-query -W ca-certificates
+  for u in https://dv-g3b-emudhra.we-have-a-problem.com/ https://dv-g3b-aaa-emudhra.we-have-a-problem.com/; do
+    node -e "fetch(\"$u\").then(() => console.log(\"TRUSTED\"), e => console.log(\"rejected:\", e.cause?.code))"
+    curl -sS -o /dev/null "$u" || true
+  done'
+```
+
 ### Environment Variables in Render
 
 All variables from `config/environments/.env.example` must be configured in
