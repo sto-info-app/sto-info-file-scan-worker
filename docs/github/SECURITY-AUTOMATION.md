@@ -52,6 +52,7 @@ Code scanning is our central dashboard for security vulnerabilities found in the
 - **Schedule**: Daily, for both npm and GitHub Actions.
 - **Grouping**: Minor and patch version updates are grouped into one PR per ecosystem; majors arrive individually so they can be assessed on their own.
 - **CI**: The full pipeline is skipped on Dependabot PRs, matching the rest of the project. Dependency safety is covered instead by Dependabot alerts, the scheduled audit, and Dependency Review.
+- **Ignored**: TypeScript major updates. TypeScript 7 drops the compiler API that the Nest CLI, ts-jest and typescript-eslint load; Dependabot shipped `typescript@7.0.2` here on 2026-09-21 and it broke `nest build` and lint. The rule comes out when those tools support it (see [SECURITY.md](../../SECURITY.md)).
 - **Config**: [.github/dependabot.yml](../../.github/dependabot.yml)
 
 ## Developer Certificate of Origin
@@ -67,6 +68,7 @@ SonarCloud provides continuous inspection of code quality and security.
 - **Security Hotspots**: Focuses on potential security risks that require human review.
 - **Rules**: Checks against a wide range of security rules (OWASP Top 10, CWE, etc.).
 - **Project**: `sto-info-app_sto-info-file-scan-worker`, configured in [sonar-project.properties](../../sonar-project.properties).
+- **Scanner**: `SonarSource/sonarqube-scan-action`, pinned by commit SHA in `lint-test.yml`. Raised to `v8.4.0` (SonarScanner CLI `8.3.0`) on 2026-10-27 following Sonar's eMudhra certificate advisory.
 
 ## Workflow Security
 
