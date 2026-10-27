@@ -10,7 +10,7 @@
     "url": "https://github.com/sto-info-app/sto-info-file-scan-worker.git"
   },
   "engines": {
-    "node": ">=24.21.0 <25"
+    "node": ">=24.22.1 <25"
   },
   "scripts": {
     "build": "npm run clean && nest build",
