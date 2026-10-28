@@ -22,7 +22,7 @@
 # lost on a `clamd` that is not yet listening, and `clamd` would otherwise go
 # on with the signatures baked in below.
 
-ARG NODE_VERSION=24.21.0
+ARG NODE_VERSION=24.22.1
 ARG S6_OVERLAY_VERSION=3.2.1.0
 
 FROM node:${NODE_VERSION}-bookworm-slim AS build

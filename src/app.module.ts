@@ -3,8 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
-import { getTypeOrmConfig } from 'config/typeorm.config';
-
+import { getTypeOrmConfig } from '../config/typeorm.config';
 import { ConfigCheckService } from './config-check/config-check.service';
 import { WorkerConfigModule } from './config/worker-config.module';
 import { DatabaseModule } from './database/database.module';
