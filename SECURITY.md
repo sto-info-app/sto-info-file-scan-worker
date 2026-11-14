@@ -73,36 +73,59 @@ updates grouped into a single PR per ecosystem.
 
 ## Known Dependency Advisory Follow-up
 
-Both the full dependency audit (`npm audit`) and the production audit gate
-(`npm audit --audit-level=high --omit=dev`) pass with **zero advisories at any
-severity** (last verified 2026-10-27).
+The production audit gate (`npm audit --audit-level=high --omit=dev`) passes,
+and `npm audit --omit=dev` reports **zero advisories at any severity** (last
+verified 2026-11-13). The full audit (`npm audit`) reports one
+development-only advisory with no patched release: `deepmerge`
+[GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) (low,
+prototype poisoning in `mergeObject()`, every version from `4.2.0` to
+`4.3.1`), reached through `jest` → `jest-config`. `4.3.1` is the newest
+`deepmerge`, so there is nothing to pin to; re-check with
+`npm view deepmerge version`.
 
-This repository carries two overrides:
+This repository carries three overrides:
 
-- `qs` → `^6.17.0` (raised from `^6.16.0` on 2026-10-27), remediating
+- `qs` → `^6.17.1` (raised from `^6.17.0` on 2026-11-13 to track the current
+  release), remediating
   [GHSA-q8mj-m7cp-5q26](https://github.com/advisories/GHSA-q8mj-m7cp-5q26),
-  [GHSA-x5fp-wj9c-mxmx](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx) and
-  [GHSA-4mjr-xmp4-gh2g](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g).
+  [GHSA-x5fp-wj9c-mxmx](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx),
+  [GHSA-4mjr-xmp4-gh2g](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g) and
+  [GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw).
   `typed-rest-client@2.3.1` (via `@stryker-mutator/core`) exact-pins
   `qs@6.15.1`; the global override keeps the tree on a release patched
-  against all three. This matches the backend's override exactly.
-  Re-checked 2026-10-27: `typed-rest-client@3.1.2` has moved to
-  `qs@^6.16.0`, but `@stryker-mutator/core@10.1.1` still pins `~2.3.0`, so the
+  against all four. Re-checked 2026-11-13: `@stryker-mutator/core@10.1.1` is
+  still the newest Stryker and still pins `typed-rest-client@~2.3.0`, so the
   override stays until Stryker takes `typed-rest-client@3`.
-- `argparse` → `^2.0.1`, remediating
-  [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c)
-  (`sprintf-js`, development tree only). Every published `sprintf-js` release is
-  affected, so no pin can help; the only consumer is `argparse@1`, reached
-  through `ts-jest` → `@jest/transform` → `babel-plugin-istanbul` →
-  `@istanbuljs/load-nyc-config@1.1.0` → `js-yaml@3`. `argparse@2` dropped
-  `sprintf-js`, and `js-yaml@3` only requires `argparse` from its `bin/js-yaml.js`
-  CLI, which nothing in this project runs — the library code in `lib/` never
-  loads it. The override therefore removes `sprintf-js` from the tree without
-  changing any code path that runs. Remove it when
-  `@istanbuljs/load-nyc-config` publishes a release on `js-yaml@4`
-  (`npm view @istanbuljs/load-nyc-config@latest dependencies.js-yaml`).
+- `glob@>=9.0.0 <14.0.2` → `^14.0.6` (added 2026-11-13), remediating
+  [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)
+  (moderate; an aborted glob walk keeps traversing the filesystem). The
+  advisory covers every release from `9.0.0` to `14.0.1` and was not
+  backported. Development tree only: `test-exclude@7.0.2` (under
+  `babel-plugin-istanbul`) asks for `glob@^10` and `@jest/reporters@30.5.2`
+  for `glob@^13`. The key is scoped to the vulnerable range, so it stops
+  matching, and can be deleted, once both ask for `14.0.2` or later.
+- `minimatch@>=7.0.0 <11.0.1` → `^11.0.8` (added 2026-11-13), remediating
+  [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)
+  (moderate; denial of service through pattern-part amplification). The
+  advisory covers `7.0.0` to `11.0.0` and was not backported to the 9.x or
+  10.x lines. Development tree only: `eslint@10.14.0`,
+  `@eslint/config-array`, `@typescript-eslint/typescript-estree@8.72.2` and
+  `@stryker-mutator/core@10.1.1` all ask for `minimatch@^10`. The same scoping
+  applies: delete the entry when `npm ls minimatch` shows nothing below
+  `11.0.1` without it.
 
-### TypeScript stays on `~6.0.3` (re-checked 2026-10-27)
+Both scoped overrides move a dependency across a major version from what its
+parent declared, so lint, the build and the full test suite with coverage
+were run against them on 2026-11-13.
+
+The `argparse` → `^2.0.1` override was removed on 2026-11-13. It existed to
+drop `sprintf-js` from the tree for
+[GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c),
+which GitHub withdrew on 2026-10-22. `js-yaml@3` (under
+`@istanbuljs/load-nyc-config`) is back on the `argparse@1` it declares, and
+`npm audit` does not report it.
+
+### TypeScript stays on `~6.0.3` (re-checked 2026-11-13)
 
 Dependabot bumped `typescript` to `7.0.2` on 2026-09-21. The CI pipeline is
 skipped on Dependabot PRs, so nothing caught that `nest build` fails outright
@@ -120,9 +143,9 @@ On 2026-10-27 the range was set to `~6.0.3` (matching the backend and
 frontend), and `.github/dependabot.yml` now ignores TypeScript majors so it
 cannot return unnoticed.
 
-Three tools gate on TypeScript 6: `@nestjs/cli@12.0.11` (bundles
+Three tools gate on TypeScript 6: `@nestjs/cli@12.0.13` (bundles
 `typescript ~6.0.2`), `ts-jest@29.4.15` (peer `<7`) and
-`@typescript-eslint/parser@8.72.1` (peer `<6.1.0`). The code itself is
+`@typescript-eslint/parser@8.72.2` (peer `<6.1.0`). The code itself is
 ready: `tsconfig.json` no longer sets `baseUrl` or `ignoreDeprecations` (the
 `src/*` alias is an explicit `paths` entry, and the one `config/` import is
 now relative), and `npx -p typescript@7.0.2 tsc -p tsconfig.spec.json --noEmit`
