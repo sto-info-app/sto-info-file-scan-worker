@@ -11,7 +11,8 @@ budgets, readiness and heartbeats, signatures, alerts, failed jobs, restore, rol
 
 The `sto-info-file-scan-worker` is hosted on Render.com as a **Background
 Worker** service, built from this repository's `Dockerfile`. The service is
-declared in [`render.yaml`](../render.yaml).
+declared in [`render/production.yaml`](../render/production.yaml); `render/development.yaml` and
+`render/staging.yaml` describe the Development and Staging projects the same way.
 
 - **Type**: Background Worker
 - **Runtime**: Docker (`./Dockerfile`)
@@ -28,13 +29,24 @@ Three processes, supervised by s6-overlay, plus one that runs and exits:
 | Service | What it is |
 | --- | --- |
 | `clamd` | The scanner. Listens on loopback only; nothing outside the container can reach it. |
-| `freshclam` | The signature updater. Twelve checks a day, and it tells `clamd` when new signatures land. |
+| `freshclam` | The signature updater. Twelve checks a day, and it tells `clamd` when new signatures land. It starts only once `clamd` answers (`docker/wait-for-clamd`), so that its first notice is not lost. |
 | `migrate` | A oneshot. `npm run migration:run` before the worker starts; if it fails, the container stops rather than running a worker that cannot work. |
 | `worker` | The application. If it exits, the container exits. |
 
 **The worker does not wait for `clamd`.** It starts, finds the scanner
 unfit and pauses its own queue until the health poll says otherwise, so
 there is no readiness gate in the image — the application already has one.
+
+**`freshclam` does wait for `clamd`.** s6 starts it as soon as `clamd`'s
+process starts, before `clamd` has loaded its signatures and opened its
+socket, and an update that landed in that gap was never loaded: the notice
+was refused, and `clamd`'s own check of its database did not catch the
+change. On tribble on 19 October 2026 that left a deploy scanning nothing,
+on signatures three days old, with that day's already on disk. So
+`freshclam` waits for `clamd`'s `PONG`, for up to ten minutes, before it
+starts. Should a reload still be missed, the worker asks `clamd` to reload
+whenever it finds the signatures too old, at most once every ten minutes
+(`SIGNATURE_RELOAD_INTERVAL_MS`).
 
 **The signature database is baked into the image at build time.** It is
 roughly a gigabyte and the first download takes minutes, during which a
@@ -83,7 +95,7 @@ docker run --rm --entrypoint sh worker-check -c '
 ### Environment Variables in Render
 
 All variables from `config/environments/.env.example` must be configured in
-Render's environment settings. `render.yaml` fixes the ones that are the
+Render's environment settings. The project's blueprint under `render/` fixes the ones that are the
 same everywhere and marks the rest `sync: false`.
 
 There is no `DB_PASSWORD`: the database password and the quarantine keys
@@ -234,7 +246,7 @@ The `pauseReason` codes:
 | `SCANNER_NOT_ASKED` | The worker has only just started and has not asked `clamd` yet. |
 | `SCANNER_UNREACHABLE` | `clamd` is not answering: still loading its database after a start or reload, or down. |
 | `SIGNATURES_UNDATED` | `clamd` answered but did not say how old its signatures are, which counts as too old. |
-| `SIGNATURES_TOO_OLD` | The signatures are older than `CLAMAV_MAX_DEFINITION_AGE_HOURS`: `freshclam` has been failing. |
+| `SIGNATURES_TOO_OLD` | The signatures `clamd` holds are older than `CLAMAV_MAX_DEFINITION_AGE_HOURS`. The worker asks `clamd` to reload every ten minutes, so if this lasts, `freshclam` has been failing. |
 | `UNKNOWN` | A reason this build has no code for. Read the worker's log. |
 
 A paused row with no reason is a worker whose scanner is fit again but whose

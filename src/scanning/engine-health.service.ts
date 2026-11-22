@@ -73,6 +73,12 @@ export const ENGINE_UNFIT_REASONS = {
 /** The short code for a reason a scanner is unfit. */
 export type EngineUnfitCode = keyof typeof ENGINE_UNFIT_REASONS;
 
+/**
+ * How often, at most, a scanner holding signatures that are too old is asked
+ * to reload them: as often as `clamd` checks its own database by default.
+ */
+export const SIGNATURE_RELOAD_INTERVAL_MS = 10 * 60 * 1000;
+
 /** What is reported before the scanner has ever been asked. */
 const UNASKED: EngineHealth = {
   healthy: false,
@@ -114,6 +120,9 @@ export class EngineHealthService implements OnModuleInit, OnModuleDestroy {
   private _timer: NodeJS.Timeout | null = null;
 
   private _inFlight: Promise<EngineHealth> | null = null;
+
+  /** When the scanner was last asked to reload, in milliseconds. */
+  private _reloadAskedAt: number | null = null;
 
   /**
    * Creates an instance of EngineHealthService.
@@ -211,11 +220,56 @@ export class EngineHealthService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    const verdict = this.judge(description);
+
+    if (verdict.reason === ENGINE_UNFIT_REASONS.SIGNATURES_TOO_OLD) {
+      await this.askToReload();
+    }
+
     return this.record({
-      ...this.judge(description),
+      ...verdict,
       description,
       checkedAt: new Date(),
     });
+  }
+
+  /**
+   * Asks a scanner whose signatures are too old to load them again, at most
+   * once every {@link SIGNATURE_RELOAD_INTERVAL_MS}.
+   *
+   * `freshclam` tells `clamd` after each update, but a notice sent while
+   * `clamd` is still starting is lost, and `clamd`'s own check of its
+   * database can miss the change too. On tribble on 19 October 2026 a
+   * deploy left `clamd` on signatures three days old, with that day's
+   * already on disk, and every scan paused until a rebuild. Newer signatures
+   * on disk are then loaded within one interval; if there are none,
+   * `freshclam` is failing and the health check goes on saying so.
+   */
+  private async askToReload(): Promise<void> {
+    const now = Date.now();
+
+    if (
+      this._reloadAskedAt !== null &&
+      now - this._reloadAskedAt < SIGNATURE_RELOAD_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this._reloadAskedAt = now;
+
+    try {
+      await this._engine.reload();
+      this._logger.warn(
+        '[askToReload] The signatures are too old - Asked the scanner to ' +
+          'reload them',
+      );
+    } catch (error) {
+      this._logger.warn(
+        `[askToReload] The scanner would not reload - Reason: ${
+          error instanceof Error ? error.message : 'unknown'
+        }`,
+      );
+    }
   }
 
   /**

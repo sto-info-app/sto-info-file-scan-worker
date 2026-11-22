@@ -97,6 +97,26 @@ export class ClamdScanEngineService implements ScanEngine {
   }
 
   /**
+   * Asks `clamd` to load its signature database again.
+   *
+   * `clamd` answers `RELOADING` at once and loads in the background, so this
+   * says only that the request was accepted; the next `describe()` shows
+   * which signatures it then holds.
+   *
+   * @throws Error when `clamd` cannot be reached or does not agree.
+   */
+  async reload(): Promise<void> {
+    const reply = await this.converse(
+      Buffer.from('zRELOAD\0', 'ascii'),
+      DESCRIBE_TIMEOUT_MS,
+    );
+
+    if (reply.trim() !== 'RELOADING') {
+      throw new Error('The scanner did not agree to reload');
+    }
+  }
+
+  /**
    * Streams bytes into `clamd` and reads its answer.
    *
    * @param source - The bytes. Consumed exactly once.
@@ -181,7 +201,8 @@ export class ClamdScanEngineService implements ScanEngine {
     const engineVersion =
       engineField?.replace(/^ClamAV\s*/i, '').trim() || null;
     const signatureVersion = signatureField?.trim() || null;
-    const builtAt = builtField === undefined ? NaN : Date.parse(builtField);
+    const builtAt =
+      builtField === undefined ? Number.NaN : Date.parse(builtField);
 
     return {
       engine: ENGINE_NAME,

@@ -14,7 +14,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * changed. With the backend's re-queue sweep asking every few minutes, that
  * is an upload asked about all day and never scanned.
  *
- * Steve's decision is **reopen, then refuse**. A new request for an attempt
+ * The rule is **reopen, then refuse**. A new request for an attempt
  * that failed reopens it — a genuine new scan — while it is under its budget
  * (`SCAN_MAX_ATTEMPTS`, counted in claims); once the budget is spent it is
  * closed with the existing final refusal, `RETRY_BUDGET_EXHAUSTED`, so the
