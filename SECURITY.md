@@ -73,15 +73,12 @@ updates grouped into a single PR per ecosystem.
 
 ## Known Dependency Advisory Follow-up
 
-The production audit gate (`npm audit --audit-level=high --omit=dev`) passes,
-and `npm audit --omit=dev` reports **zero advisories at any severity** (last
-verified 2026-11-13). The full audit (`npm audit`) reports one
-development-only advisory with no patched release: `deepmerge`
-[GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) (low,
-prototype poisoning in `mergeObject()`, every version from `4.2.0` to
-`4.3.1`), reached through `jest` → `jest-config`. `4.3.1` is the newest
-`deepmerge`, so there is nothing to pin to; re-check with
-`npm view deepmerge version`.
+Both the production audit gate (`npm audit --audit-level=high --omit=dev`)
+and the full audit (`npm audit`) report **zero advisories at any severity**
+(last verified 2026-11-22). The `deepmerge` advisory
+[GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4),
+which Jest still brings in through `jest-config`, was withdrawn on
+2026-11-16; `deepmerge@4.3.1` is unchanged.
 
 This repository carries three overrides:
 
@@ -93,7 +90,7 @@ This repository carries three overrides:
   [GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw).
   `typed-rest-client@2.3.1` (via `@stryker-mutator/core`) exact-pins
   `qs@6.15.1`; the global override keeps the tree on a release patched
-  against all four. Re-checked 2026-11-13: `@stryker-mutator/core@10.1.1` is
+  against all four. Re-checked 2026-11-22: `@stryker-mutator/core@10.1.1` is
   still the newest Stryker and still pins `typed-rest-client@~2.3.0`, so the
   override stays until Stryker takes `typed-rest-client@3`.
 - `glob@>=9.0.0 <14.0.2` → `^14.0.6` (added 2026-11-13), remediating
@@ -167,6 +164,16 @@ engine range and every workflow) and was rebuilt with a current Debian
 `ca-certificates`. The SonarQube scan action was raised to `v8.4.0`. See
 [docs/infrastructure.md](docs/infrastructure.md#base-image-and-certificate-trust)
 for why the image needs both changes and how to verify them.
+
+### Node.js 24.22.3 (2026-11-22)
+
+Node.js 24.22.3, released on 2026-11-10, is a security release fixing
+nine high-severity TLS and HTTP/2 flaws, among them a remotely reachable TLS
+server crash (CVE-2026-126051) and TLS resumption or renegotiation changing
+the SNI (CVE-2026-123872). The worker moved to **Node.js `24.22.3`** in
+`.nvmrc`, the `Dockerfile` `ARG`, the engine range and every workflow. The
+new base image tag also makes the next build pull a fresh
+`node:24.22.3-bookworm-slim`.
 
 Eleven further overrides (`@babel/core`, `diff`, `form-data`, `handlebars`,
 `js-yaml`, `lodash`, `multer`, `path-to-regexp`, `picomatch`,
