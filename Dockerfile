@@ -19,7 +19,7 @@
 # application already has one, and a wait loop here would only duplicate it
 # less well.
 
-ARG NODE_VERSION=24.22.1
+ARG NODE_VERSION=24.22.3
 ARG S6_OVERLAY_VERSION=3.2.1.0
 
 FROM node:${NODE_VERSION}-bookworm-slim AS build

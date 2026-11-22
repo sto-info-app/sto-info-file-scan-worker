@@ -48,7 +48,7 @@ landed.
 
 The image builds on `node:${NODE_VERSION}-bookworm-slim`, with
 `NODE_VERSION` set by an `ARG` in the `Dockerfile` that must match `.nvmrc`
-(currently `24.22.1`). The container has two separate trust stores, and a
+(currently `24.22.3`). The container has two separate trust stores, and a
 certificate-authority incident has to be handled in both:
 
 - **Node.js** (the worker's calls to AWS S3, Secrets Manager and the like)

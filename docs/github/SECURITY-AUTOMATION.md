@@ -68,7 +68,7 @@ SonarCloud provides continuous inspection of code quality and security.
 - **Security Hotspots**: Focuses on potential security risks that require human review.
 - **Rules**: Checks against a wide range of security rules (OWASP Top 10, CWE, etc.).
 - **Project**: `sto-info-app_sto-info-file-scan-worker`, configured in [sonar-project.properties](../../sonar-project.properties).
-- **Scanner**: `SonarSource/sonarqube-scan-action`, pinned by commit SHA in `lint-test.yml`. Raised to `v8.4.0` (SonarScanner CLI `8.3.0`) on 2026-10-27 following Sonar's eMudhra certificate advisory.
+- **Scanner**: `SonarSource/sonarqube-scan-action`, pinned by commit SHA in `lint-test.yml`. Currently `v8.5.0`, raised on 2026-11-22. It moved to `v8.4.0` (SonarScanner CLI `8.3.0`) on 2026-10-27 following Sonar's eMudhra certificate advisory.
 
 ## Workflow Security
 
