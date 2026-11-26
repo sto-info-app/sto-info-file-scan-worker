@@ -143,7 +143,8 @@ Environment files live in [config/environments/](config/environments/):
 3. Set `BACKEND_DB_ROLE` to the database role the backend connects as. Only
    the migrations read it: they grant that role `SELECT` on the scan usage
    views and the worker heartbeat view, and nothing else in this schema. The
-   migrations refuse to run without it. It is not in `.env.example`.
+   migrations refuse to run without it. Locally it is the backend's
+   `DB_USERNAME`, which is `postgres` in both example files.
 4. Provide your AWS credentials to allow the app to pull sensitive secrets
    (`dbPassword` and the read-only quarantine bucket keys) from AWS Secrets
    Manager. See [docs/security.md](docs/security.md) for what those
