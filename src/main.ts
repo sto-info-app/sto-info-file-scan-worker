@@ -94,4 +94,9 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+// A failed start is logged and ends the process with a failure code, so the
+// platform restarts it rather than leaving a worker that never listens.
+bootstrap().catch((error: unknown) => {
+  console.error('File scan worker failed to start', error);
+  process.exit(1);
+});
